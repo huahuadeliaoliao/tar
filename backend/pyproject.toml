@@ -1,0 +1,121 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tar-backend"
+version = "1.0.0"
+description = "tar agent backend powered by FastAPI, SQLite, and OpenAI"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "Florian Liao" }]
+keywords = ["fastapi", "openai", "agent", "chatbot", "ai"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+  # Web framework
+  "fastapi>=0.115.0",                        # FastAPI web framework
+  "uvicorn[standard]>=0.32.0",               # ASGI server
+  "tomli>=2.0.1; python_version < \"3.11\"", # TOML parser for Python < 3.11
+
+  # Database layer
+  "sqlalchemy>=2.0.36", # ORM/DB layer
+
+  # Data validation
+  "pydantic>=2.12.0",         # Data validation
+  "pydantic-settings>=2.6.0", # Config loading
+
+  # Authentication
+  "python-jose[cryptography]>=3.3.0", # JWT handling
+  "passlib>=1.7.4",                   # Password hashing
+  "bcrypt==4.0.1",                    # Pin version to avoid ABI issues
+
+  # File uploads
+  "python-multipart>=0.0.18", # Multipart uploads
+
+  # OpenAI client
+  "openai>=1.58.0", # OpenAI client SDK
+
+  # Image processing
+  "pillow>=11.0.0", # Image manipulation
+
+  # PDF to image
+  "pdf2image>=1.17.0", # PDF rasterization
+
+  # Document helpers (optional)
+  "python-docx>=1.1.2", # Word document helper
+  "python-pptx>=1.0.2", # PowerPoint helper
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.24.0",
+  "httpx>=0.28.0",
+  "black>=24.0.0",
+  "ruff>=0.8.0",
+]
+
+
+[tool.setuptools]
+package-dir = { "" = "." }
+packages = ["app"]
+
+[tool.black]
+line-length = 120
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+  "E", # pycodestyle errors
+  "W", # pycodestyle warnings
+  "F", # pyflakes
+  "I", # isort
+  "C", # flake8-comprehensions
+  "B", # flake8-bugbear
+]
+ignore = [
+  "E501", # line too long
+  "B008", # do not perform function calls in argument defaults
+  "C901", # too complex
+]
+extend-select = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+
+[tool.pyright]
+include = ["app"]
+exclude = ["**/__pycache__", "**/node_modules", "**/.venv", "**/venv"]
+stubPath = "typings"
+reportMissingImports = true
+reportMissingTypeStubs = false
+typeCheckingMode = "basic"
+reportAttributeAccessIssue = false
+reportArgumentType = false
+reportCallIssue = false
+reportGeneralTypeIssues = false
+reportReturnType = false
+reportAssignmentType = false
+reportMissingModuleSource = false

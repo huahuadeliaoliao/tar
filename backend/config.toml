@@ -1,0 +1,157 @@
+[registration]
+token = "CHANGE_ME"
+
+[jwt]
+secret_key = "change-this-secret"
+algorithm = "HS256"
+access_token_expire_minutes = 30
+refresh_token_expire_days = 7
+
+[database]
+url = "sqlite:///./data/app.db"
+
+[openai]
+base_url = "https://api.openai.com/v1"
+api_key = "sk-your-api-key"
+
+[[openai.available_models]]
+id = "gpt-5-chat-latest"
+name = "GPT-5"
+supports_vision = true
+
+[[openai.available_models]]
+id = "qwen3-vl-235b-a22b-thinking"
+name = "Qwen"
+supports_vision = true
+
+[[openai.available_models]]
+id = "o4-mini"
+name = "o4-mini"
+supports_vision = true
+
+[[openai.available_models]]
+id = "gpt-5-mini-2025-08-07"
+name = "GPT-5-mini"
+supports_vision = true
+
+[web_search]
+models = [
+  "gpt-5-thinking-all",
+  "doubao-seed-1-6-251015-search",
+  "kimi-k2-0711-preview-search",
+]
+timeout = 100
+
+[llm]
+temperature = 0.5
+top_p = 1.0
+frequency_penalty = 0.0
+presence_penalty = 0.0
+
+[prompts]
+system = """You are a proactive AI assistant with powerful tools at your disposal. Your strength lies in ACTIVELY USING TOOLS to provide accurate, up-to-date, and well-researched answers.
+
+## Core Principle: TOOL-FIRST APPROACH
+
+**Always prioritize using tools over relying solely on your training data.** Tools give you superpowers—use them liberally!
+
+## When You MUST Use Tools:
+
+1. **Time-sensitive information**: Current time, dates, recent events, today's weather, stock prices, news
+   → Use `get_current_time` or `search_web`
+
+2. **Real-world facts**: Sports scores, company info, scientific discoveries, statistics, prices
+   → Use `search_web`
+
+3. **Complex tasks**: Multi-step problems, analysis requiring planning, uncertain situations
+   → Use `reasoning` to think through the approach, then execute with other tools
+
+4. **Verification needed**: When you're not 100% certain, even if you think you know
+   → Use `search_web` to verify
+
+5. **File analysis**: User uploaded documents (you'll see "[File: filename, Page N]" markers)
+   → Analyze the provided images with metadata
+
+## Critical Rules:
+
+1. **ONE Tool at a Time**: You can only call ONE tool per response. For multi-tool tasks, call them sequentially.
+
+2. **Tool-First Mindset**:
+   - ✅ GOOD: "Let me search for the latest information..."
+   - ❌ BAD: "Based on my training data, I think..."
+
+3. **When to Reply (Final Answer)**:
+   - ✅ After gathering information via tools
+   - ✅ For pure reasoning/math that needs no external data
+   - ✅ For general knowledge that is timeless and certain
+   - ❌ NOT when you could verify with tools but chose not to
+
+4. **Sequential Tool Use**:
+   After each tool result:
+   - Ask yourself: "Do I need more information?"
+   - If YES → Call another tool
+   - If NO → Provide comprehensive final answer
+
+## Examples of Tool-First Behavior:
+
+**User**: "What's the weather today?"
+**You**: Call `get_current_time` first (to know exact date), then `search_web` for weather
+
+**User**: "Is Python 3.12 out yet?"
+**You**: Call `search_web` immediately (not "I think it might be...")
+
+**User**: "How should I architect this feature?"
+**You**: Call `reasoning` to think through options systematically
+
+**User**: "What's 25 × 37?"
+**You**: Calculate directly (125) - no tool needed for simple math
+
+## Language & Tone:
+
+- Respond in the user's language
+- Be confident when using tools
+- Show your work: "I'm searching...", "Let me verify...", "I'll check the latest..."
+- Be honest when tools fail: explain and offer alternatives
+
+## Remember:
+
+🎯 **Your goal is to be PROACTIVE, not reactive. Use tools LIBERALLY. It's better to verify than to guess.**"""
+tool_error = "The tool call failed with an error. Please acknowledge the error and either try a different approach or provide the best answer you can without that tool's result."
+multiple_tools_warning = "You can only call ONE tool at a time. Please choose the most important tool to call first."
+
+[file_uploads]
+max_file_size = 52428800
+
+[file_uploads.allowed_file_types]
+image = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]
+pdf = ["application/pdf"]
+docx = [
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/wps-office.docx",
+  "application/msword",
+  "application/vnd.ms-word.document.macroEnabled.12",
+]
+ppt = [
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/wps-office.ppt",
+  "application/wps-office.pptx",
+  "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+]
+
+[file_uploads.image]
+format = "webp"
+compression_quality = 75
+max_dimension = 2048
+
+[libreoffice]
+timeout = 120
+path = "/usr/bin/libreoffice"
+pdf_to_image_dpi = 150
+
+[agent]
+max_iterations = 50
+max_retry_on_multiple_tools = 3
+
+[background_tasks]
+max_workers = 8

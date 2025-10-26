@@ -1,0 +1,11 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+class CryptContext:
+    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def verify(self, *args: Any, **kwargs: Any) -> bool: ...
+
+    def hash(self, *args: Any, **kwargs: Any) -> str: ...

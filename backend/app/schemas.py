@@ -233,18 +233,21 @@ class ContentStartEvent(SSEEvent):
     """Event fired before the assistant begins streaming content."""
 
     message: str
+    guarded: Optional[bool] = None
 
 
 class ContentDeltaEvent(SSEEvent):
     """Event containing a content delta chunk."""
 
     delta: str
+    guarded: Optional[bool] = None
 
 
 class ContentDoneEvent(SSEEvent):
     """Event emitted when all content has been generated."""
 
     full_content: str
+    guarded: Optional[bool] = None
 
 
 class IterationInfoEvent(SSEEvent):

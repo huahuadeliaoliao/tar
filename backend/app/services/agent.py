@@ -58,8 +58,20 @@ def load_complete_history(session_id: int, db: Session) -> List[Dict[str, Any]]:
                     }
                 )
             else:
-                # Plain assistant responses reuse the stored content.
-                history.append({"role": "assistant", "content": msg.content})
+                assistant_content = msg.content or ""
+                parsed_content: Dict[str, Any] | None = None
+                try:
+                    parsed = json.loads(assistant_content)
+                    if isinstance(parsed, dict) and parsed.get("type") == "assistant_final":
+                        parsed_content = parsed  # store for progress if needed later
+                except (json.JSONDecodeError, TypeError):
+                    parsed_content = None
+
+                if parsed_content:
+                    final_text = parsed_content.get("final", "")
+                    history.append({"role": "assistant", "content": final_text})
+                else:
+                    history.append({"role": "assistant", "content": assistant_content})
         elif msg.role == "tool":
             # Tool responses map back via tool_call_id.
             history.append({"role": "tool", "tool_call_id": msg.tool_call_id, "content": msg.tool_output})
@@ -122,7 +134,14 @@ def save_user_message_to_db(session_id: int, content: List[Dict[str, Any]], sequ
     return message.id
 
 
-def save_assistant_message_to_db(session_id: int, content: str, sequence: int, model_id: str, db: Session) -> int:
+def save_assistant_message_to_db(
+    session_id: int,
+    content: str,
+    sequence: int,
+    model_id: str,
+    db: Session,
+    progress_segments: Optional[List[str]] = None,
+) -> int:
     """Persist an assistant message and return its identifier.
 
     Args:
@@ -131,11 +150,24 @@ def save_assistant_message_to_db(session_id: int, content: str, sequence: int, m
         sequence: Sequence number within the session.
         model_id: Model used to generate the response.
         db: Database session used for persistence.
+        progress_segments: Optional execution log entries produced while
+            `ready_to_reply` was false.
 
     Returns:
         int: Primary key of the stored message.
     """
-    message = Message(session_id=session_id, role="assistant", content=content, sequence=sequence, model_id=model_id)
+    payload = {
+        "type": "assistant_final",
+        "final": content,
+        "progress": progress_segments or [],
+    }
+    message = Message(
+        session_id=session_id,
+        role="assistant",
+        content=json.dumps(payload, ensure_ascii=False),
+        sequence=sequence,
+        model_id=model_id,
+    )
     db.add(message)
     db.commit()
     db.refresh(message)
@@ -249,6 +281,23 @@ async def run_agent_loop(
 
     iteration = 0
     retry_count = 0
+    ready_to_reply_guard = False
+    last_stream_guard_state: Optional[bool] = None
+    progress_segments: List[str] = []
+    progress_buffer = ""
+    ready_to_reply_reminder = (
+        "During your most recent reasoning tool call, you set `ready_to_reply` to false, which means you do not yet have"
+        " enough information for a final answer. Continue executing your plan, calling tools, or refining the plan instead"
+        " of replying. If you believe the conversation is ready for a final response, call the reasoning tool again to"
+        " review the evidence and set `ready_to_reply` to true; otherwise, keep executing the next step."
+    )
+
+    def flush_progress_buffer() -> None:
+        nonlocal progress_buffer, progress_segments
+        stripped = progress_buffer.strip()
+        if stripped:
+            progress_segments.append(stripped)
+        progress_buffer = ""
 
     while iteration < config.MAX_ITERATIONS:
         # Notify the client that the agent is thinking.
@@ -262,7 +311,6 @@ async def run_agent_loop(
         finish_reason = None
         # Stream deltas in real time while also storing the full text.
         full_content = ""
-        has_content_started = False
 
         async for chunk in call_llm_with_tools(history, model_id, stream=True):
             response_chunks.append(chunk)
@@ -270,24 +318,39 @@ async def run_agent_loop(
             # Process streaming content.
             if chunk.choices and len(chunk.choices) > 0:
                 delta = chunk.choices[0].delta
-
                 if hasattr(delta, "content") and delta.content:
                     delta_text = delta.content
-                    full_content += delta_text
+                    current_guard = ready_to_reply_guard
 
-                    # Emit content_start only once.
-                    if not has_content_started:
-                        has_content_started = True
+                    if last_stream_guard_state != current_guard:
+                        message = (
+                            "Sharing execution progress..."
+                            if current_guard
+                            else "Starting response generation..."
+                        )
                         yield sse_event(
                             {
                                 "type": "content_start",
-                                "message": "Starting response generation...",
+                                "message": message,
                                 "timestamp": get_timestamp(),
+                                "guarded": current_guard,
                             }
                         )
+                        last_stream_guard_state = current_guard
 
-                    # Stream each delta to the client immediately.
-                    yield sse_event({"type": "content_delta", "delta": delta_text, "timestamp": get_timestamp()})
+                    if current_guard:
+                        progress_buffer += delta_text
+                    else:
+                        full_content += delta_text
+
+                    yield sse_event(
+                        {
+                            "type": "content_delta",
+                            "delta": delta_text,
+                            "timestamp": get_timestamp(),
+                            "guarded": current_guard,
+                        }
+                    )
 
                 # Accumulate tool-call fragments.
                 if hasattr(delta, "tool_calls") and delta.tool_calls:
@@ -415,16 +478,47 @@ async def run_agent_loop(
                 {"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(tool_result, ensure_ascii=False)}
             )
 
+            if tool_name == "reasoning":
+                ready_flag = None
+                if isinstance(tool_result, dict):
+                    ready_flag = tool_result.get("ready_to_reply")
+                if ready_flag is False:
+                    ready_to_reply_guard = True
+                    last_stream_guard_state = None
+                    if not history or history[-1].get("content") != ready_to_reply_reminder:
+                        history.append({"role": "system", "content": ready_to_reply_reminder})
+                elif ready_flag is True:
+                    flush_progress_buffer()
+                    ready_to_reply_guard = False
+                    last_stream_guard_state = None
+
             retry_count = 0  # Reset retry count.
 
         elif finish_reason == "stop":
             # Model produced a final answer; the stream already delivered deltas.
+            if ready_to_reply_guard:
+                flush_progress_buffer()
+                last_stream_guard_state = None
+                yield sse_event(
+                    {
+                        "type": "status",
+                        "status": "awaiting_more_actions",
+                        "message": "Reasoning marked the task as not ready for a final answer. Continue executing the plan.",
+                        "timestamp": get_timestamp(),
+                    }
+                )
+                if not history or history[-1].get("content") != ready_to_reply_reminder:
+                    history.append({"role": "system", "content": ready_to_reply_reminder})
+                continue
 
             # Persist the assistant message.
-            message_id = save_assistant_message_to_db(session_id, full_content, current_sequence, model_id, db)
+            flush_progress_buffer()
+            message_id = save_assistant_message_to_db(
+                session_id, full_content, current_sequence, model_id, db, progress_segments
+            )
 
             # Signal that streaming is finished (no need to resend the text).
-            yield sse_event({"type": "content_done", "timestamp": get_timestamp()})
+            yield sse_event({"type": "content_done", "timestamp": get_timestamp(), "guarded": False})
 
             # Emit the final done event.
             total_time_ms = int((time.time() - start_time) * 1000)

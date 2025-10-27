@@ -7,16 +7,19 @@ import AiIcon from '@/components/ui/AiIcon.vue'
 import Button from '@/components/ui/Button.vue'
 import type { Message } from '@/types/chat'
 
-interface Props {
-  message: Message
-  variant?: 'contained' | 'flat'
-  avatarSrc?: string
-  avatarFallback?: string
-}
-
-const props = withDefaults(defineProps<Props>(), {
-  variant: 'flat',
-})
+const props = withDefaults(
+  defineProps<{
+    message: Message
+    variant?: 'contained' | 'flat'
+    avatarSrc?: string
+    avatarFallback?: string
+    showCopyButton?: boolean
+  }>(),
+  {
+    variant: 'flat',
+    showCopyButton: true,
+  },
+)
 
 const isUser = computed(() => props.message.role === 'user')
 const isCopied = ref(false)
@@ -75,7 +78,7 @@ const userAvatarClasses = 'from-blue-500 to-blue-600 text-white'
     <div :class="contentClasses">
       <slot />
       <Button
-        v-if="!isUser && message.content"
+        v-if="!isUser && props.showCopyButton && message.content"
         variant="ghost"
         size="icon"
         class="absolute top-2 right-2 h-7 w-7 opacity-0 transition-opacity group-hover:opacity-100"

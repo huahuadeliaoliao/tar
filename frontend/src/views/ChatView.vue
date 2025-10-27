@@ -16,9 +16,15 @@ import {
   AiPromptInput,
   AiProcessingStep,
 } from '@/components/ai'
-import type { Message, AssistantMessage, ToolCallPart, FileAttachment } from '@/types/chat'
+import type {
+  Message,
+  AssistantMessage,
+  ToolCallPart,
+  FileAttachment,
+  MessagePart,
+} from '@/types/chat'
 import type { SSEEvent } from '@/types/api'
-import { Loader2, Settings, Check, X, Edit2 } from 'lucide-vue-next'
+import { Loader2, Settings, Check, X, Edit2, Copy, ChevronDown } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
@@ -60,6 +66,44 @@ async function loadSessionMessages() {
   } finally {
     loading.value = false
   }
+}
+
+function parseAssistantContent(raw: string | null | undefined) {
+  let finalText = ''
+  const progressSegments: string[] = []
+
+  if (typeof raw === 'string' && raw.length > 0) {
+    try {
+      const parsed = JSON.parse(raw)
+
+      if (parsed && typeof parsed === 'object' && parsed.type === 'assistant_final') {
+        if (typeof parsed.final === 'string') {
+          finalText = parsed.final
+        }
+
+        if (Array.isArray(parsed.progress)) {
+          for (const segment of parsed.progress) {
+            if (typeof segment === 'string' && segment.trim().length > 0) {
+              progressSegments.push(segment)
+            }
+          }
+        }
+      } else {
+        finalText = raw
+      }
+    } catch (error) {
+      console.warn('Failed to parse assistant content payload:', error)
+      finalText = raw
+    }
+  }
+
+  if (!finalText && typeof raw === 'string') {
+    finalText = raw
+  }
+
+  const progressLog = progressSegments.join('\n\n').trim()
+
+  return { finalText: finalText || '', progressLog, progressSegments }
 }
 
 function convertApiMessages(apiMessages: any[]): Message[] {
@@ -180,6 +224,9 @@ function convertApiMessages(apiMessages: any[]): Message[] {
             role: 'assistant',
             content: '',
             parts: [],
+            progressLog: '',
+            progressSegments: [],
+            isProgressCollapsed: false,
             timestamp: new Date(msg.created_at).getTime(),
             status: 'done',
           }
@@ -210,9 +257,14 @@ function convertApiMessages(apiMessages: any[]): Message[] {
         }
 
         currentAssistant.parts.push(toolCall)
-      } else if (msg.content) {
+      } else {
+        const { finalText, progressLog, progressSegments } = parseAssistantContent(msg.content)
+
         if (currentAssistant) {
-          currentAssistant.content = msg.content
+          currentAssistant.content = finalText
+          currentAssistant.progressLog = progressLog
+          currentAssistant.progressSegments = progressSegments
+          currentAssistant.isProgressCollapsed = progressLog.length > 0
           currentAssistant.metadata = {
             model_id: msg.model_id,
           }
@@ -222,8 +274,11 @@ function convertApiMessages(apiMessages: any[]): Message[] {
           converted.push({
             id: String(msg.id),
             role: 'assistant',
-            content: msg.content,
+            content: finalText,
             parts: [],
+            progressLog,
+            progressSegments,
+            isProgressCollapsed: progressLog.length > 0,
             timestamp: new Date(msg.created_at).getTime(),
             status: 'done',
             metadata: {
@@ -240,6 +295,48 @@ function convertApiMessages(apiMessages: any[]): Message[] {
   }
 
   return converted
+}
+
+const copiedMessageId = ref<string | null>(null)
+
+function getMessageParts(message: AssistantMessage, type: MessagePart['type']) {
+  return message.parts.filter((part) => part.type === type)
+}
+
+function hasExecutionLog(message: AssistantMessage) {
+  return (
+    getMessageParts(message, 'thinking').length > 0 ||
+    getMessageParts(message, 'tool_call').length > 0 ||
+    getMessageParts(message, 'error').length > 0 ||
+    !!message.progressLog?.trim()
+  )
+}
+
+function getProgressPreview(message: AssistantMessage) {
+  if (!message.progressLog) return ''
+  const trimmed = message.progressLog.trim()
+  if (trimmed.length <= 120) {
+    return trimmed
+  }
+  return `${trimmed.slice(0, 117)}...`
+}
+
+function toggleExecutionLog(message: AssistantMessage) {
+  message.isProgressCollapsed = !message.isProgressCollapsed
+}
+
+async function copyFinalAnswer(message: AssistantMessage) {
+  try {
+    await navigator.clipboard.writeText(message.content)
+    copiedMessageId.value = message.id
+    setTimeout(() => {
+      if (copiedMessageId.value === message.id) {
+        copiedMessageId.value = null
+      }
+    }, 2000)
+  } catch (error) {
+    console.error('Failed to copy assistant response:', error)
+  }
 }
 
 async function waitForFileProcessing(fileId: number, maxRetries: number = 120) {
@@ -313,6 +410,9 @@ async function handleSubmit(content: string, files: (FileAttachment & { _file?: 
     role: 'assistant',
     content: '',
     parts: [],
+    progressLog: '',
+    progressSegments: [],
+    isProgressCollapsed: false,
     timestamp: Date.now(),
     status: 'streaming',
     processingStates:
@@ -490,6 +590,22 @@ async function handleSubmit(content: string, files: (FileAttachment & { _file?: 
 
 function handleSSEEvent(event: SSEEvent, message: AssistantMessage): string | void {
   switch (event.type) {
+    case 'status':
+      if (event.status === 'awaiting_more_actions') {
+        message.status = 'streaming'
+      }
+      break
+
+    case 'content_start': {
+      const guarded = (event as any).guarded ?? false
+      if (guarded) {
+        message.isProgressCollapsed = false
+      } else if (hasExecutionLog(message)) {
+        message.isProgressCollapsed = true
+      }
+      break
+    }
+
     case 'thinking':
       message.parts.push({
         type: 'thinking',
@@ -530,7 +646,11 @@ function handleSSEEvent(event: SSEEvent, message: AssistantMessage): string | vo
       break
 
     case 'content_delta':
-      message.content += (event as any).delta || ''
+      if ((event as any).guarded) {
+        message.progressLog = (message.progressLog || '') + ((event as any).delta || '')
+      } else {
+        message.content += (event as any).delta || ''
+      }
       return 'content_delta'
 
     case 'content_done':
@@ -541,6 +661,13 @@ function handleSSEEvent(event: SSEEvent, message: AssistantMessage): string | vo
         ...message.metadata,
         total_time_ms: event.total_time_ms,
         iterations: event.total_iterations,
+      }
+      if (message.progressLog) {
+        message.progressSegments = message.progressLog
+          .split(/\n\n+/)
+          .map((segment) => segment.trim())
+          .filter(Boolean)
+        message.isProgressCollapsed = true
       }
       break
 
@@ -764,7 +891,12 @@ onMounted(() => {
           </div>
         </div>
         <AiConversation v-else ref="conversationRef">
-          <AiMessage v-for="message in messages" :key="message.id" :message="message">
+          <AiMessage
+            v-for="message in messages"
+            :key="message.id"
+            :message="message"
+            :show-copy-button="message.role === 'user'"
+          >
             <template v-if="message.role === 'user'">
               <AiResponse :content="message.content" :files="message.files" />
             </template>
@@ -775,33 +907,109 @@ onMounted(() => {
                 :state="state"
                 class="mb-3"
               />
-              <AiThinking
-                v-for="(part, i) in (message as AssistantMessage).parts.filter(
-                  (p) => p.type === 'thinking',
-                )"
-                :key="`thinking-${i}`"
-                :message="(part as any).message"
-              />
-              <AiToolCall
-                v-for="(part, i) in (message as AssistantMessage).parts.filter(
-                  (p) => p.type === 'tool_call',
-                )"
-                :key="`tool-${i}`"
-                :tool-call="part as any"
-              />
-              <AiError
-                v-for="(part, i) in (message as AssistantMessage).parts.filter(
-                  (p) => p.type === 'error',
-                )"
-                :key="`error-${i}`"
-                :error-code="(part as any).code"
-                :error-message="(part as any).message"
-              />
-              <AiResponse
-                v-if="message.content"
-                :content="message.content"
-                :streaming="message.status === 'streaming'"
-              />
+              <div class="flex flex-col gap-4">
+                <div
+                  v-if="hasExecutionLog(message as AssistantMessage)"
+                  class="relative rounded-2xl border border-zinc-200/70 bg-white p-4 shadow-sm transition-all dark:border-zinc-800/70 dark:bg-zinc-900/50"
+                  :class="
+                    (message as AssistantMessage).isProgressCollapsed
+                      ? 'max-h-36 overflow-hidden'
+                      : ''
+                  "
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <p class="text-sm font-medium text-zinc-700 dark:text-zinc-200">执行日志</p>
+                    <button
+                      type="button"
+                      class="flex items-center gap-1 rounded-full border border-zinc-300/70 bg-white/80 px-3 py-1 text-xs font-medium text-zinc-600 shadow-sm transition hover:border-zinc-400 hover:text-zinc-900 dark:border-zinc-700/70 dark:bg-zinc-900/70 dark:text-zinc-300 dark:hover:border-zinc-500 dark:hover:text-zinc-100"
+                      @click="toggleExecutionLog(message as AssistantMessage)"
+                    >
+                      <span>{{
+                        (message as AssistantMessage).isProgressCollapsed ? '展开' : '收起'
+                      }}</span>
+                      <ChevronDown
+                        :size="14"
+                        class="transition-transform"
+                        :class="{
+                          '-rotate-180': !(message as AssistantMessage).isProgressCollapsed,
+                        }"
+                      />
+                    </button>
+                  </div>
+                  <div class="relative mt-3">
+                    <div
+                      class="execution-log-content space-y-3 pr-1 text-sm leading-relaxed text-zinc-700 dark:text-zinc-200"
+                      :class="{
+                        'max-h-32 overflow-hidden': (message as AssistantMessage)
+                          .isProgressCollapsed,
+                      }"
+                    >
+                      <AiThinking
+                        v-for="(part, i) in getMessageParts(
+                          message as AssistantMessage,
+                          'thinking',
+                        )"
+                        :key="`thinking-${i}`"
+                        :message="(part as any).message"
+                      />
+                      <AiToolCall
+                        v-for="(part, i) in getMessageParts(
+                          message as AssistantMessage,
+                          'tool_call',
+                        )"
+                        :key="`tool-${i}`"
+                        :tool-call="part as any"
+                      />
+                      <AiError
+                        v-for="(part, i) in getMessageParts(message as AssistantMessage, 'error')"
+                        :key="`error-${i}`"
+                        :error-code="(part as any).code"
+                        :error-message="(part as any).message"
+                      />
+                      <div
+                        v-if="(message as AssistantMessage).progressLog"
+                        class="rounded-xl border border-zinc-200/70 bg-zinc-100/70 p-3 font-mono text-xs text-zinc-700 shadow-inner dark:border-zinc-800/60 dark:bg-zinc-800/40 dark:text-zinc-200"
+                      >
+                        <pre class="max-h-96 overflow-y-auto whitespace-pre-wrap">{{
+                          (message as AssistantMessage).progressLog
+                        }}</pre>
+                      </div>
+                    </div>
+                    <div
+                      v-if="
+                        (message as AssistantMessage).isProgressCollapsed &&
+                        (message as AssistantMessage).progressLog
+                      "
+                      class="pointer-events-none absolute inset-x-0 bottom-0 translate-y-1/2 rounded-full bg-white/90 px-3 py-1 text-xs font-medium text-zinc-500 shadow-md dark:bg-zinc-900/90 dark:text-zinc-300"
+                    >
+                      {{ getProgressPreview(message as AssistantMessage) }}
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  class="relative group/answer rounded-2xl border border-zinc-200/70 bg-white p-4 shadow-sm dark:border-zinc-800/70 dark:bg-zinc-900/50"
+                >
+                  <button
+                    v-if="message.content"
+                    type="button"
+                    class="absolute top-4 right-4 flex items-center justify-center rounded-full border border-zinc-200/70 bg-white/80 p-2 text-zinc-500 opacity-0 transition group-hover/answer:opacity-100 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700/70 dark:bg-zinc-900/70 dark:text-zinc-300 dark:hover:border-zinc-500 dark:hover:text-zinc-100"
+                    @click="copyFinalAnswer(message as AssistantMessage)"
+                  >
+                    <Check
+                      v-if="copiedMessageId === message.id"
+                      :size="16"
+                      class="text-emerald-500"
+                    />
+                    <Copy v-else :size="16" />
+                  </button>
+                  <AiResponse
+                    v-if="message.content"
+                    :content="message.content"
+                    :streaming="message.status === 'streaming'"
+                  />
+                </div>
+              </div>
             </template>
           </AiMessage>
         </AiConversation>

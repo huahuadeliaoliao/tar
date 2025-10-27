@@ -30,6 +30,9 @@ export interface AssistantMessage extends BaseMessage {
   role: 'assistant'
   content: string
   parts: MessagePart[]
+  progressLog?: string
+  progressSegments?: string[]
+  isProgressCollapsed?: boolean
   processingStates?: ProcessingState[]
   metadata?: {
     model_id?: string

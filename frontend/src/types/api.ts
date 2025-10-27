@@ -82,7 +82,13 @@ export interface BaseSSEEvent {
 
 export interface StatusEvent extends BaseSSEEvent {
   type: 'status'
-  status: 'processing' | 'thinking' | 'tool_calling' | 'generating' | 'completed'
+  status:
+    | 'processing'
+    | 'thinking'
+    | 'tool_calling'
+    | 'generating'
+    | 'completed'
+    | 'awaiting_more_actions'
   message: string
 }
 
@@ -116,16 +122,19 @@ export interface ToolResultEvent extends BaseSSEEvent {
 export interface ContentStartEvent extends BaseSSEEvent {
   type: 'content_start'
   message: string
+  guarded?: boolean
 }
 
 export interface ContentDeltaEvent extends BaseSSEEvent {
   type: 'content_delta'
   delta: string
+  guarded?: boolean
 }
 
 export interface ContentDoneEvent extends BaseSSEEvent {
   type: 'content_done'
   full_content: string
+  guarded?: boolean
 }
 
 export interface IterationInfoEvent extends BaseSSEEvent {

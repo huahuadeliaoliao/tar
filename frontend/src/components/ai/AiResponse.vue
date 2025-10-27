@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onUnmounted } from 'vue'
+import { computed, ref, watch, onUnmounted, nextTick, onMounted } from 'vue'
 import { marked } from 'marked'
 import { cn } from '@/utils/cn'
 import AiImagePreview from './AiImagePreview.vue'
@@ -32,6 +32,19 @@ const renderedContent = computed(() => {
   if (!displayContent.value) return ''
   return marked.parse(displayContent.value)
 })
+
+const contentRef = ref<HTMLElement | null>(null)
+
+function updateAnchorTargets() {
+  nextTick(() => {
+    if (!contentRef.value) return
+    const anchors = contentRef.value.querySelectorAll<HTMLAnchorElement>('a[href]')
+    anchors.forEach((anchor) => {
+      anchor.setAttribute('target', '_blank')
+      anchor.setAttribute('rel', 'noopener noreferrer')
+    })
+  })
+}
 
 function typeContent() {
   if (!props.streaming) {
@@ -84,6 +97,11 @@ function typeContent() {
 }
 
 watch(() => props.content, typeContent, { immediate: true })
+watch(renderedContent, updateAnchorTargets)
+
+onMounted(() => {
+  updateAnchorTargets()
+})
 
 onUnmounted(() => {
   clearInterval(typingInterval.value)
@@ -110,6 +128,7 @@ onUnmounted(() => {
     </div>
     <div
       v-if="renderedContent"
+      ref="contentRef"
       class="prose prose-sm min-w-0 max-w-none dark:prose-invert prose-p:my-3 prose-pre:my-3 prose-headings:mt-4 prose-headings:mb-2 prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-li:my-1 prose-ol:my-3 prose-ul:my-3 prose-blockquote:my-3 prose-blockquote:pl-3 prose-img:my-3 prose-strong:font-semibold prose-code:text-amber-600 dark:prose-code:text-amber-400"
       v-html="renderedContent"
     />

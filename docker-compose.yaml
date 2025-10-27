@@ -1,0 +1,46 @@
+services:
+  backend-dev:
+    profiles: ["dev"]
+    container_name: tar_backend
+    build: ./backend
+    ports:
+      - "8713:8000"
+    volumes:
+      - ./backend:/app
+      - tar_data:/app/data
+    restart: always
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+      ]
+
+  backend-prod:
+    profiles: ["prod"]
+    container_name: tar_backend
+    build: ./backend
+    volumes:
+      - ./backend:/app
+      - tar_data:/app/data
+    restart: always
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  proxy:
+    profiles: ["prod"]
+    container_name: tar_proxy
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    volumes:
+      - ./proxy/config.toml:/proxy/config.toml
+    ports:
+      - "8713:8713"
+    restart: always
+
+volumes:
+  tar_data:

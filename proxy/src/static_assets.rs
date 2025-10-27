@@ -194,6 +194,13 @@ impl StaticAssets {
             }
             Err(err) => {
                 if err.kind() == std::io::ErrorKind::NotFound {
+                    if is_route_like(&resolved.logical_path) {
+                        debug!(
+                            "route-like request {:?} not found in static files, serving SPA fallback",
+                            resolved.logical_path
+                        );
+                        return self.respond_with_index(session).await;
+                    }
                     debug!(
                         "static asset miss for {:?}, falling back to upstream",
                         resolved.full_path
@@ -320,6 +327,33 @@ impl StaticAssets {
         Ok(true)
     }
 
+    async fn respond_with_index(&self, session: &mut Session) -> Result<bool> {
+        let mut full_path = self.root.clone();
+        full_path.push(&self.index_file);
+
+        match fs::metadata(&full_path).await {
+            Ok(metadata) => {
+                let etag = build_etag(metadata.len(), metadata.modified().ok());
+                let last_modified = metadata.modified().ok().map(fmt_http_date);
+                let resolved = ResolvedFile {
+                    full_path,
+                    logical_path: self.index_file.clone(),
+                    from_manifest: false,
+                };
+                self.respond_with_file(session, resolved, metadata.len(), etag, last_modified)
+                    .await
+            }
+            Err(err) => Err(Error::because(
+                ErrorType::FileReadError,
+                format!(
+                    "failed to read SPA fallback index file {:?}",
+                    self.index_file
+                ),
+                err,
+            )),
+        }
+    }
+
     fn is_not_modified(&self, session: &Session, etag: &str, last_modified: Option<&str>) -> bool {
         if let Some(value) = session
             .req_header()
@@ -423,6 +457,10 @@ fn contains_illegal_component(path: &str) -> bool {
     Path::new(path)
         .components()
         .any(|c| matches!(c, Component::ParentDir | Component::RootDir))
+}
+
+fn is_route_like(path: &str) -> bool {
+    Path::new(path).extension().is_none()
 }
 
 fn normalise_prefix(prefix: &str) -> String {

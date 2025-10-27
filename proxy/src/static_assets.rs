@@ -380,6 +380,10 @@ impl StaticAssets {
     }
 
     async fn resolve(&self, request_path: &str) -> Option<ResolvedFile> {
+        if request_path.starts_with("/api/") {
+            return None;
+        }
+
         if !request_path.starts_with(&self.mount_path) {
             return None;
         }

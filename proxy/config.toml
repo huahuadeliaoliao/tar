@@ -1,0 +1,38 @@
+# chat server address
+upstream_addr = "backend-prod:8000"
+
+# pingora server address
+listen_addr = "[::]:8713"
+
+# log level
+log_level = "info"
+
+# The default time for Docker to force shutdown is 10 seconds, 
+# the sum of the time for these two options should be less than 10s to work properly.
+
+# grace period in seconds before starting the final step of 
+# the graceful shutdown after signaling shutdown.
+grace_period_seconds = 1
+
+# timeout in seconds of the final step for the graceful shutdown.
+graceful_shutdown_timeout_seconds = 1
+
+# === Static assets settings ===
+# Directory containing built frontend artifacts (inside container: /proxy/frontend/dist)
+static_root = "/proxy/frontend/dist"
+# URL mount prefix (keep "/" to serve from root)
+static_mount = "/"
+# Default entry file (useful for SPAs)
+static_index_file = "index.html"
+# Optional manifest produced by the frontend build (maps logical names to hashed files)
+static_manifest = "/proxy/frontend/dist/.vite/manifest.json"
+
+# Static caching strategy
+# Default cache duration for non-hashed files (seconds)
+static_default_cache_seconds = 60
+# Cache duration for hashed/immutable files (seconds)
+static_immutable_cache_seconds = 31536000
+# Downstream keep-alive duration (seconds)
+static_keepalive_seconds = 60
+# Manifest refresh polling interval (seconds)
+static_manifest_poll_seconds = 5

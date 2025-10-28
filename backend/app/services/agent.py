@@ -562,6 +562,10 @@ async def run_agent_loop(
                 }
             )
 
+        # Treat missing finish_reason as "stop" when we already have content but no tool calls.
+        if finish_reason is None and not tool_calls_buffer and full_content.strip():
+            finish_reason = "stop"
+
         # Decide how to act on the streamed response.
         if finish_reason == "tool_calls" and tool_calls_buffer:
             # Enforce single-tool execution.
@@ -729,6 +733,38 @@ async def run_agent_loop(
 
                 history.append({"role": "system", "content": reminder_message})
                 textual_calls_detected = []
+                force_reasoning_next = True
+                continue
+
+            # Guard against empty final responses.
+            if not full_content.strip():
+                retry_count += 1
+                if retry_count > config.MAX_RETRY_ON_MULTIPLE_TOOLS:
+                    yield sse_event(
+                        {
+                            "type": "error",
+                            "error_code": "EMPTY_RESPONSE_MAX_RETRIES",
+                            "error_message": "Model produced no usable content after multiple retries.",
+                            "timestamp": get_timestamp(),
+                        }
+                    )
+                    raise UnexpectedFinishReasonError("Empty response after retries")
+
+                reminder_message = (
+                    "Your previous response contained no usable text. "
+                    "Please provide a natural-language answer or call an appropriate tool."
+                )
+                yield sse_event(
+                    {
+                        "type": "retry",
+                        "reason": "empty_content",
+                        "retry_count": retry_count,
+                        "max_retries": config.MAX_RETRY_ON_MULTIPLE_TOOLS,
+                        "message": reminder_message,
+                        "timestamp": get_timestamp(),
+                    }
+                )
+                history.append({"role": "system", "content": reminder_message})
                 force_reasoning_next = True
                 continue
 

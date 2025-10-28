@@ -24,6 +24,12 @@ The backend reads all runtime settings from `config.toml` (located at the reposi
   - `MAX_FILE_SIZE`
   - `LIBREOFFICE_TIMEOUT`
   - `LIBREOFFICE_PATH`
+  - `DDGS_TIMEOUT`
+  - `DDGS_VERIFY_SSL`
+  - `DDGS_PROXY`
+  - `DDGS_MAX_THREADS`
+  - `DDGS_CACHE_TTL_SECONDS`
+  - `DDGS_CACHE_MAXSIZE`
 
 > **Tip:** Check the `Config` class in `app/config.py` for the authoritative list of overrides and defaults.
 
@@ -35,6 +41,7 @@ The backend reads all runtime settings from `config.toml` (located at the reposi
 | `[jwt]`              | Secrets & timeouts for access/refresh tokens.                        |
 | `[database]`         | Database connection string (`sqlite:///./data/app.db` by default).   |
 | `[openai]`           | Base URL, API key, and available model definitions.                  |
+| `[ddgs]`             | Defaults for the DDGS web search tool (region, backend, caching).    |
 | `[web_search]`       | Model fallback order and timeout for the search tool.                |
 | `[llm]`              | Default sampling parameters applied to chat completions.             |
 | `[prompts]`          | System prompt plus error/warning messages shown to the agent.        |
@@ -68,6 +75,22 @@ supports_vision = true
 ## Adding a model
 
 Append another `[[openai.available_models]]` block with `id`, `name`, and `supports_vision`. The `/api/models` endpoint exposes this list to clients.
+
+## DDGS search configuration
+
+The `[ddgs]` section tunes the built-in `ddgs_search` tool:
+
+- `default_category`: One of `text`, `images`, `news`, `videos`, `books`.
+- `default_backend`: Comma-separated backend list or `auto`.
+- `default_region`: Region code such as `us-en`, `cn-zh`.
+- `default_safesearch`: `on`, `moderate`, or `off`.
+- `default_timelimit`: Optional time filter (`d`, `w`, `m`, `y`). Leave blank for none.
+- `timeout`: Per-request timeout in seconds passed to DDGS.
+- `verify_ssl`: Whether to verify TLS certificates.
+- `proxy`: Optional proxy (supports `http`, `https`, `socks5`, or `tb` for Tor Browser).
+- `max_threads`: Upper bound for the DDGS thread pool (`None`/empty uses library default).
+- `cache_ttl_seconds`: How long cached search results are reused.
+- `cache_maxsize`: Maximum number of cached query variants.
 
 ## File upload configuration
 

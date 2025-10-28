@@ -42,6 +42,19 @@ models = [
 ]
 timeout = 100
 
+[ddgs]
+default_category = "text"
+default_backend = "auto"
+default_region = "us-en"
+default_safesearch = "moderate"
+default_timelimit = ""
+timeout = 10
+verify_ssl = true
+proxy = ""
+max_threads = 16
+cache_ttl_seconds = 60
+cache_maxsize = 128
+
 [llm]
 temperature = 0.5
 top_p = 1.0
@@ -65,6 +78,7 @@ system = """You are an autonomous assistant whose primary advantage is the **rea
 - Make it clear when you are still working versus when you have finished.
 - If you ever lack enough information, say so and explain how to proceed.
 - Always invoke tools via the structured tool-call channel—**never print tool-call JSON as plain text** or describe the raw payload unless the user explicitly asks.
+- Tool calls must be issued only through the structured `tool_calls` API. Printing JSON like `{"name": "...", "arguments": {...}}` inside your text output is invalid and will be discarded; always emit tool calls via the dedicated channel instead.
 - Only one tool call is permitted per turn. If multiple tools are needed, invoke them sequentially across turns.
 - When a tool call is rejected or blocked, do not attempt to “fake” the result; instead, re-run reasoning, adjust your plan, and try again.
 - Summaries and final answers should focus on conclusions and insights; reserve tool-call details for the execution log unless the user requests them.

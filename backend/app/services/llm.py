@@ -17,6 +17,7 @@ async def call_llm_with_tools(
     stream: bool = True,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    tool_choice: Optional[Any] = None,
 ) -> AsyncGenerator:
     """Call the chat API with tool support.
 
@@ -26,6 +27,7 @@ async def call_llm_with_tools(
         stream: Whether to stream the response.
         temperature: Optional override for sampling temperature.
         max_tokens: Optional override for maximum completion tokens.
+        tool_choice: Optional forced tool selection (e.g., specify a particular tool to invoke).
 
     Yields:
         OpenAIStream or OpenAICompletion: Streaming chunks or a full response.
@@ -43,13 +45,18 @@ async def call_llm_with_tools(
         "model": model_id,
         "messages": messages,
         "tools": tools,
-        "tool_choice": "auto",
         "stream": stream,
         "temperature": temperature,
         "top_p": config.LLM_TOP_P,
         "frequency_penalty": config.LLM_FREQUENCY_PENALTY,
         "presence_penalty": config.LLM_PRESENCE_PENALTY,
     }
+
+    # Default tool choice.
+    if tool_choice is None:
+        request_params["tool_choice"] = "auto"
+    else:
+        request_params["tool_choice"] = tool_choice
 
     # Only include max_tokens when a value is provided.
     if max_tokens is not None:

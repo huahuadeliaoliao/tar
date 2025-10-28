@@ -1,8 +1,170 @@
 """Tool definitions and execution helpers."""
 
+import logging
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set
 from zoneinfo import ZoneInfo
+
+from app.config import config
+from app.services.ddgs_client import DDGSSearchError, get_ddgs_client
+
+logger = logging.getLogger(__name__)
+
+VALID_CATEGORIES = {"text", "images", "news", "videos", "books"}
+SAFESEARCH_LEVELS = {"on", "moderate", "off"}
+TIMELIMIT_VALUES = {"d", "w", "m", "y"}
+LANG_TO_REGION = {
+    "en": "us-en",
+    "en-us": "us-en",
+    "en-gb": "uk-en",
+    "zh": "cn-zh",
+    "zh-cn": "cn-zh",
+    "zh-tw": "tw-tzh",
+    "zh-hk": "hk-tzh",
+    "es": "es-es",
+    "es-mx": "mx-es",
+    "fr": "fr-fr",
+    "de": "de-de",
+    "it": "it-it",
+    "ja": "jp-jp",
+    "ko": "kr-kr",
+    "pt": "pt-pt",
+    "pt-br": "br-pt",
+    "ru": "ru-ru",
+    "ar": "xa-ar",
+    "hi": "in-en",
+}
+LOCATION_TO_REGION = {
+    "united states": "us-en",
+    "usa": "us-en",
+    "china": "cn-zh",
+    "mainland china": "cn-zh",
+    "taiwan": "tw-tzh",
+    "hong kong": "hk-tzh",
+    "germany": "de-de",
+    "france": "fr-fr",
+    "italy": "it-it",
+    "united kingdom": "uk-en",
+    "uk": "uk-en",
+    "japan": "jp-jp",
+    "south korea": "kr-kr",
+    "mexico": "mx-es",
+    "spain": "es-es",
+    "brazil": "br-pt",
+    "india": "in-en",
+    "canada": "ca-en",
+    "canada-fr": "ca-fr",
+    "australia": "au-en",
+}
+DEFAULT_MAX_RESULTS = 20
+
+
+def _maybe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_region(region: Optional[str], location: Optional[str], lang: Optional[str], fallback: str) -> str:
+    if isinstance(region, str) and region.strip():
+        return region.strip().lower()
+
+    if isinstance(location, str):
+        key = location.strip().lower()
+        if key in LOCATION_TO_REGION:
+            return LOCATION_TO_REGION[key]
+
+    if isinstance(lang, str):
+        key = lang.strip().lower()
+        if key in LANG_TO_REGION:
+            return LANG_TO_REGION[key]
+        if "-" in key:
+            lang_part, country_part = key.split("-", 1)
+            return f"{country_part}-{lang_part}"
+
+    return fallback
+
+
+def _filter_fields(result: Dict[str, Any], requested: Set[str] | None) -> Dict[str, Any]:
+    if not requested or "*" in requested:
+        return result
+
+    allowed = set(requested) | {"rank", "backend"}
+    return {key: value for key, value in result.items() if key in allowed}
+
+
+def _format_results(
+    raw_items: List[Dict[str, Any]],
+    *,
+    category: str,
+    backend: str,
+    requested_fields: Set[str] | None,
+) -> List[Dict[str, Any]]:
+    formatted: List[Dict[str, Any]] = []
+
+    for idx, item in enumerate(raw_items, start=1):
+        if category == "text":
+            base = {
+                "title": item.get("title", ""),
+                "url": item.get("href", ""),
+                "snippet": item.get("body", ""),
+                "rank": idx,
+                "backend": backend,
+            }
+        elif category == "images":
+            base = {
+                "title": item.get("title", ""),
+                "image_url": item.get("image", ""),
+                "thumbnail": item.get("thumbnail", ""),
+                "page_url": item.get("url", ""),
+                "source": item.get("source", ""),
+                "width": _maybe_int(item.get("width")),
+                "height": _maybe_int(item.get("height")),
+                "rank": idx,
+                "backend": backend,
+            }
+        elif category == "news":
+            base = {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "source": item.get("source", ""),
+                "snippet": item.get("body", ""),
+                "date": item.get("date", ""),
+                "image_url": item.get("image", ""),
+                "rank": idx,
+                "backend": backend,
+            }
+        elif category == "videos":
+            base = {
+                "title": item.get("title", ""),
+                "url": item.get("content") or item.get("embed_url", ""),
+                "description": item.get("description", ""),
+                "duration": item.get("duration", ""),
+                "provider": item.get("provider", ""),
+                "publisher": item.get("publisher", ""),
+                "embed_url": item.get("embed_url", ""),
+                "thumbnails": item.get("images", {}),
+                "rank": idx,
+                "backend": backend,
+            }
+        elif category == "books":
+            base = {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "author": item.get("author", ""),
+                "publisher": item.get("publisher", ""),
+                "info": item.get("info", ""),
+                "thumbnail": item.get("thumbnail", ""),
+                "rank": idx,
+                "backend": backend,
+            }
+        else:  # pragma: no cover - safeguarded by category validation
+            base = {"rank": idx, "backend": backend}
+
+        formatted.append(_filter_fields(base, requested_fields))
+
+    return formatted
 
 # Tool definitions.
 AVAILABLE_TOOLS = [
@@ -26,8 +188,87 @@ AVAILABLE_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "search_web",
-            "description": "Search the web for current information, news, facts, or any knowledge that requires up-to-date data. Use this when you need real-time information or recent events.",
+            "name": "ddgs_search",
+            "description": (
+                "Search the live web via DDGS metasearch. Provide focused queries, optionally specify category/backends, "
+                "and call repeatedly to cover complex information needs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "queries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "description": "One or more search queries. Each item should focus on a single intent.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Convenience alias when only one query is needed.",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": sorted(VALID_CATEGORIES),
+                        "description": "Search domain: text, images, news, videos, or books. Defaults to text.",
+                    },
+                    "backend": {
+                        "type": "string",
+                        "description": "Backend list (comma-separated) or 'auto' to let DDGS pick engines.",
+                    },
+                    "region": {
+                        "type": "string",
+                        "description": "Explicit region code like 'us-en'. Overrides lang/location heuristics.",
+                    },
+                    "lang": {
+                        "type": "string",
+                        "description": "Language hint used to infer region when explicit region is absent.",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Location hint (country/city) used to infer region when provided.",
+                    },
+                    "safesearch": {
+                        "type": "string",
+                        "enum": sorted(SAFESEARCH_LEVELS),
+                        "description": "Safe-search level: on, moderate, or off.",
+                    },
+                    "timelimit": {
+                        "type": "string",
+                        "enum": sorted(TIMELIMIT_VALUES),
+                        "description": "Time filter: d=day, w=week, m=month, y=year.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "description": "Maximum number of results per query. Use non-positive values or omit for all available.",
+                    },
+                    "collect_per_result_fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Only include specific fields in each result. Use '*' to keep all.",
+                    },
+                    "include_raw": {
+                        "type": "boolean",
+                        "description": "Attach sanitized raw results for debugging/tracing.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional context describing the information need for logging/tracking.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ai_search_web",
+            "description": (
+                "Query an online-enabled language model that can browse the web. "
+                "Use this only when ddgs_search is unavailable or insufficient, and validate important facts yourself."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -99,8 +340,10 @@ def execute_tool(
     """
     if tool_name == "get_current_time":
         return execute_get_current_time(tool_input)
-    elif tool_name == "search_web":
-        return execute_search_web(tool_input)
+    elif tool_name == "ddgs_search":
+        return execute_ddgs_search(tool_input)
+    elif tool_name == "ai_search_web":
+        return execute_ai_search_web(tool_input)
     elif tool_name == "reasoning":
         return execute_reasoning(tool_input, messages_history or [], session_id or 0)
     else:
@@ -144,8 +387,209 @@ def execute_get_current_time(tool_input: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
-def execute_search_web(tool_input: Dict[str, Any]) -> Dict[str, Any]:
-    """Invoke a web-search-capable LLM with automatic fallback.
+def execute_ddgs_search(tool_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Perform live web search using DDGS."""
+    client = get_ddgs_client()
+
+    raw_queries = tool_input.get("queries")
+    if isinstance(raw_queries, str):
+        raw_queries = [raw_queries]
+    elif raw_queries is None:
+        single_query = tool_input.get("query")
+        raw_queries = [single_query] if single_query is not None else []
+    elif not isinstance(raw_queries, list):
+        raw_queries = []
+
+    queries: List[str] = []
+    for candidate in raw_queries:
+        if isinstance(candidate, str):
+            stripped = candidate.strip()
+            if stripped:
+                queries.append(stripped)
+
+    if not queries:
+        return {
+            "success": False,
+            "error": "empty_query",
+            "message": "Provide at least one non-empty query in 'queries' or 'query'.",
+        }
+
+    category_default = config.DDGS_DEFAULT_CATEGORY if config.DDGS_DEFAULT_CATEGORY in VALID_CATEGORIES else "text"
+    category = str(tool_input.get("category", category_default)).lower()
+    if category not in VALID_CATEGORIES:
+        category = category_default
+
+    backend_default = config.DDGS_DEFAULT_BACKEND or "auto"
+    backend_value = tool_input.get("backend", backend_default)
+    backend = str(backend_value).strip() if isinstance(backend_value, str) else backend_default
+    backend = backend or backend_default
+
+    safesearch_default = (
+        config.DDGS_DEFAULT_SAFESEARCH if config.DDGS_DEFAULT_SAFESEARCH in SAFESEARCH_LEVELS else "moderate"
+    )
+    safesearch_value = tool_input.get("safesearch", safesearch_default)
+    safesearch = str(safesearch_value).lower() if isinstance(safesearch_value, str) else safesearch_default
+    if safesearch not in SAFESEARCH_LEVELS:
+        safesearch = safesearch_default
+
+    timelimit_default = config.DDGS_DEFAULT_TIMELIMIT
+    timelimit_value = tool_input.get("timelimit", timelimit_default)
+    timelimit: str | None
+    if isinstance(timelimit_value, str) and timelimit_value.strip():
+        tl_candidate = timelimit_value.strip().lower()
+        timelimit = tl_candidate if tl_candidate in TIMELIMIT_VALUES else None
+    else:
+        timelimit = None
+
+    region_value = tool_input.get("region")
+    region_override = region_value.strip() if isinstance(region_value, str) and region_value.strip() else None
+
+    lang_value = tool_input.get("lang")
+    lang = lang_value.strip() if isinstance(lang_value, str) and lang_value.strip() else None
+
+    location_value = tool_input.get("location")
+    location = location_value.strip() if isinstance(location_value, str) and location_value.strip() else None
+
+    notes_value = tool_input.get("notes")
+    notes = notes_value.strip() if isinstance(notes_value, str) and notes_value.strip() else None
+
+    max_results_raw = tool_input.get("max_results")
+    max_results: int | None = DEFAULT_MAX_RESULTS
+    if isinstance(max_results_raw, int):
+        if max_results_raw > 0:
+            max_results = min(max_results_raw, 200)
+        else:
+            max_results = None
+    elif isinstance(max_results_raw, str) and max_results_raw.strip().lower() in {"all", "none", "*", "unlimited"}:
+        max_results = None
+
+    fields_raw = tool_input.get("collect_per_result_fields")
+    collect_fields: Set[str] | None = None
+    if isinstance(fields_raw, list):
+        collect_fields = {str(field).strip() for field in fields_raw if str(field).strip()}
+        if not collect_fields or "*" in collect_fields:
+            collect_fields = None
+
+    include_raw = bool(tool_input.get("include_raw", False))
+
+    region_fallback = config.DDGS_DEFAULT_REGION or "us-en"
+
+    data_entries: List[Dict[str, Any]] = []
+    overall_success = False
+
+    for query in queries:
+        resolved_region = _resolve_region(region_override, location, lang, region_fallback)
+
+        try:
+            result = client.search(
+                query=query,
+                category=category,
+                backend=backend,
+                region=resolved_region,
+                safesearch=safesearch,
+                timelimit=timelimit,
+                max_results=max_results,
+            )
+        except DDGSSearchError as exc:
+            failure_meta = {
+                "query": query,
+                "category": category,
+                "backend": backend,
+                "region": resolved_region,
+                "safesearch": safesearch,
+                "timelimit": timelimit,
+                "cache_hit": False,
+                "duration_ms": 0,
+                "backend_list": [b.strip() for b in backend.split(",") if b.strip()] or [backend],
+                "max_results_requested": max_results,
+            }
+            if notes:
+                failure_meta["notes"] = notes
+
+            data_entries.append(
+                {
+                    "query": query,
+                    "success": False,
+                    "error": exc.code,
+                    "detail": exc.message,
+                    "meta": failure_meta,
+                }
+            )
+
+            logger.warning(
+                "DDGS search failed",
+                extra={
+                    "ddgs_query": query,
+                    "ddgs_error_code": exc.code,
+                    "ddgs_backend": backend,
+                    "ddgs_category": category,
+                },
+            )
+            continue
+
+        clean_items = [{k: v for k, v in item.items() if not str(k).startswith("_")} for item in result.items]
+        formatted_results = _format_results(clean_items, category=category, backend=backend, requested_fields=collect_fields)
+
+        meta: Dict[str, Any] = {
+            "query": query,
+            "category": category,
+            "backend": backend,
+            "backend_list": list(result.backend_list),
+            "region": resolved_region,
+            "safesearch": safesearch,
+            "timelimit": timelimit,
+            "result_count": len(formatted_results),
+            "cache_hit": result.cache_hit,
+            "duration_ms": result.duration_ms,
+            "max_results_requested": max_results,
+            "max_results_effective": result.max_results,
+        }
+
+        if collect_fields:
+            meta["fields_included"] = sorted(collect_fields)
+        if notes:
+            meta["notes"] = notes
+        if include_raw:
+            meta["raw_results"] = clean_items
+
+        data_entries.append(
+            {
+                "query": query,
+                "success": True,
+                "results": formatted_results,
+                "meta": meta,
+            }
+        )
+
+        overall_success = True
+
+        logger.debug(
+            "DDGS search succeeded",
+            extra={
+                "ddgs_query": query,
+                "ddgs_result_count": len(formatted_results),
+                "ddgs_cache_hit": result.cache_hit,
+            },
+        )
+
+    response: Dict[str, Any] = {
+        "success": overall_success,
+        "category": category,
+        "backend": backend,
+        "safesearch": safesearch,
+        "timelimit": timelimit,
+        "queries": queries,
+        "data": data_entries,
+    }
+
+    if not overall_success:
+        response["error"] = "all_queries_failed"
+
+    return response
+
+
+def execute_ai_search_web(tool_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Invoke a web-aware LLM as a fallback search mechanism.
 
     Args:
         tool_input: Dictionary that must include the `query`.
@@ -161,7 +605,7 @@ def execute_search_web(tool_input: Dict[str, Any]) -> Dict[str, Any]:
     if not query:
         return {"success": False, "error": "Search query cannot be empty"}
 
-    # Construct the search prompt.
+    # Construct the search prompt with reliability reminder.
     search_prompt = f"""Search the web for the following request and provide detailed, accurate information:
 
 {query}
@@ -170,14 +614,23 @@ Requirements:
 1. Provide up-to-date, accurate information
 2. List primary sources when multiple exist
 3. Note the time of the information when relevant
-4. Present results in a clear, structured format"""
+4. Present results in a clear, structured format
+5. If information appears uncertain, state the confidence level and suggest verification steps"""
 
     # Try each configured model until one succeeds.
     last_error = None
     for model_id in config.WEB_SEARCH_MODELS:
         try:
             result = call_search_llm(search_prompt, model_id)
-            return {"success": True, "query": query, "result": result, "model_used": model_id}
+            return {
+                "success": True,
+                "query": query,
+                "result": result,
+                "model_used": model_id,
+                "disclaimer": (
+                    "This result comes from a browsing-capable language model. Verify critical details before use."
+                ),
+            }
         except Exception as e:
             last_error = str(e)
             # Log the error and continue.
@@ -190,7 +643,10 @@ Requirements:
         "query": query,
         "error": "Unable to perform online search right now; all search services are unavailable",
         "detail": f"Last error: {last_error}" if last_error else "No search model configured",
-        "message": "Suggestions: 1) Use another method to answer 2) Tell the user search is unavailable 3) Answer using existing knowledge",
+        "message": (
+            "Suggestions: 1) Prefer ddgs_search if possible 2) Tell the user online search is unavailable "
+            "3) Answer using existing knowledge with caveats"
+        ),
     }
 
 

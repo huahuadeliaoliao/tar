@@ -35,6 +35,7 @@ class Config:
         database = data.get("database", {})
         openai = data.get("openai", {})
         web_search = data.get("web_search", {})
+        ddgs_data = data.get("ddgs", {})
         llm = data.get("llm", {})
         prompts = data.get("prompts", {})
         file_uploads = data.get("file_uploads", {})
@@ -63,6 +64,25 @@ class Config:
 
         self.WEB_SEARCH_MODELS: List[str] = list(web_search.get("models", []))
         self.WEB_SEARCH_TIMEOUT: int = int(os.getenv("WEB_SEARCH_TIMEOUT", web_search.get("timeout", 100)))
+
+        self.DDGS_DEFAULT_CATEGORY: str = (ddgs_data.get("default_category") or "text").lower()
+        self.DDGS_DEFAULT_BACKEND: str = ddgs_data.get("default_backend", "auto")
+        self.DDGS_DEFAULT_REGION: str = ddgs_data.get("default_region", "us-en")
+        self.DDGS_DEFAULT_SAFESEARCH: str = (ddgs_data.get("default_safesearch") or "moderate").lower()
+        default_timelimit_raw = ddgs_data.get("default_timelimit")
+        self.DDGS_DEFAULT_TIMELIMIT: str | None = default_timelimit_raw if default_timelimit_raw else None
+        self.DDGS_TIMEOUT: int = int(os.getenv("DDGS_TIMEOUT", ddgs_data.get("timeout", 10)))
+        self.DDGS_VERIFY_SSL: bool = self._parse_bool(os.getenv("DDGS_VERIFY_SSL", ddgs_data.get("verify_ssl", True)))
+        self.DDGS_PROXY: str | None = os.getenv("DDGS_PROXY", ddgs_data.get("proxy")) or None
+        self.DDGS_MAX_THREADS: int | None = self._parse_optional_int(
+            os.getenv("DDGS_MAX_THREADS", self._none_to_empty(ddgs_data.get("max_threads")))
+        )
+        self.DDGS_CACHE_TTL_SECONDS: int = int(
+            os.getenv("DDGS_CACHE_TTL_SECONDS", ddgs_data.get("cache_ttl_seconds", 60))
+        )
+        self.DDGS_CACHE_MAXSIZE: int = int(
+            os.getenv("DDGS_CACHE_MAXSIZE", ddgs_data.get("cache_maxsize", 128))
+        )
 
         self.LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", llm.get("temperature", 0.5)))
         self.LLM_TOP_P: float = float(os.getenv("LLM_TOP_P", llm.get("top_p", 1.0)))
@@ -125,6 +145,23 @@ class Config:
         if value in (None, "", "None", "none", "null", "Null"):
             return None
         return int(value)
+
+    @staticmethod
+    def _parse_bool(value: Any) -> bool:
+        """Parse a boolean-like value.
+
+        Args:
+            value: Any truthy/falsy representation.
+
+        Returns:
+            bool: Parsed boolean, defaulting to False only for explicit false-like values.
+        """
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        str_value = str(value).strip().lower()
+        return str_value not in {"0", "false", "no", "off"}
 
 
 def load_config(path: Path | str | None = None) -> Config:

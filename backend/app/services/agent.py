@@ -299,7 +299,155 @@ async def run_agent_loop(
             progress_segments.append(stripped)
         progress_buffer = ""
 
+    def parse_textual_tool_calls(text: str) -> List[Dict[str, Any]]:
+        stripped = text.strip()
+        if not stripped:
+            return []
+
+        argument_hints: Dict[str, set[str]] = {
+            "reasoning": {"thinking_focus", "specific_question"},
+            "ddgs_search": {"query"},
+            "ai_search_web": {"query"},
+            "get_current_time": {"timezone"},
+        }
+
+        def infer_tool_name(payload: Dict[str, Any]) -> Optional[str]:
+            payload_keys = {str(k) for k in payload.keys()}
+            for tool_key, required_keys in argument_hints.items():
+                if tool_key == "ddgs_search" and payload_keys.intersection({"query", "queries"}):
+                    return tool_key
+                if required_keys.issubset(payload_keys):
+                    return tool_key
+            return None
+
+        def try_parse(segment: str) -> Any:
+            segment_stripped = segment.strip()
+            if not segment_stripped:
+                return None
+
+            def load_candidate(candidate: str) -> Any:
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    return None
+
+            direct = load_candidate(segment_stripped)
+            if direct is not None:
+                return direct
+
+            wrappers = [('"', '"'), ("'", "'"), ("(", ")")]
+            for open_br, close_br in wrappers:
+                if segment_stripped.startswith(open_br) and segment_stripped.endswith(close_br):
+                    inner = segment_stripped[len(open_br) : -len(close_br)]
+                    wrapped = load_candidate(inner)
+                    if wrapped is not None:
+                        return wrapped
+                    segment_stripped = inner.strip()
+
+            if segment_stripped and segment_stripped[0] not in "{[":
+                trimmed_lead = load_candidate(segment_stripped[1:])
+                if trimmed_lead is not None:
+                    return trimmed_lead
+
+            if segment_stripped and segment_stripped[-1] not in "}]":
+                trimmed_tail = load_candidate(segment_stripped[:-1])
+                if trimmed_tail is not None:
+                    return trimmed_tail
+
+            return None
+
+        parsed_objects: List[Any] = []
+        direct = try_parse(stripped)
+        if direct is not None:
+            if isinstance(direct, list):
+                parsed_objects.extend(direct)
+            else:
+                parsed_objects.append(direct)
+        else:
+            segments = [line.strip().rstrip(",") for line in stripped.splitlines() if line.strip()]
+            for segment in segments:
+                parsed = try_parse(segment)
+                if parsed is not None:
+                    parsed_objects.append(parsed)
+
+        normalized_calls: List[Dict[str, Any]] = []
+        for obj in parsed_objects:
+            if not isinstance(obj, dict):
+                continue
+
+            name = obj.get("name") or obj.get("tool_name") or obj.get("function")
+
+            raw_arguments = None
+            for key in ("arguments", "args", "input", "parameters", "payload"):
+                if key in obj:
+                    raw_arguments = obj[key]
+                    break
+
+            if raw_arguments is None:
+                candidates = {
+                    k: v
+                    for k, v in obj.items()
+                    if k not in {"id", "type", "name", "tool_name", "function"}
+                }
+                raw_arguments = candidates or obj
+
+            if not name and isinstance(raw_arguments, dict):
+                inferred = infer_tool_name(raw_arguments)
+                if inferred:
+                    name = inferred
+
+            if not name:
+                continue
+
+            if isinstance(raw_arguments, str):
+                args_str = raw_arguments
+            else:
+                try:
+                    args_str = json.dumps(raw_arguments, ensure_ascii=False)
+                except TypeError:
+                    continue
+
+            normalized_calls.append(
+                {"id": obj.get("id", ""), "type": "function", "function": {"name": name, "arguments": args_str}}
+            )
+
+        return normalized_calls
+
+    force_reasoning_next = False
+
+    pending_text_output = ""
+    textual_calls_detected: List[Dict[str, Any]] = []
+
+    def collect_output_segments(guard_state: bool, final: bool = False) -> List[str]:
+        nonlocal pending_text_output, textual_calls_detected
+
+        segments: List[str] = []
+        while pending_text_output:
+            newline_idx = pending_text_output.find("\n")
+            segment: Optional[str] = None
+
+            if newline_idx != -1:
+                segment = pending_text_output[: newline_idx + 1]
+                pending_text_output = pending_text_output[newline_idx + 1 :]
+            elif final or not pending_text_output.strip().startswith(("{", "[")):
+                segment = pending_text_output
+                pending_text_output = ""
+            else:
+                break
+
+            if segment is None or not segment:
+                continue
+
+            parsed = parse_textual_tool_calls(segment)
+            if parsed:
+                textual_calls_detected.extend(parsed)
+            else:
+                segments.append(segment)
+
+        return segments
+
     while iteration < config.MAX_ITERATIONS:
+        textual_calls_detected = []
         # Notify the client that the agent is thinking.
         yield sse_event(
             {"type": "thinking", "message": "Thinking about how to respond...", "timestamp": get_timestamp()}
@@ -312,7 +460,13 @@ async def run_agent_loop(
         # Stream deltas in real time while also storing the full text.
         full_content = ""
 
-        async for chunk in call_llm_with_tools(history, model_id, stream=True):
+        tool_choice = (
+            {"type": "function", "function": {"name": "reasoning"}}
+            if force_reasoning_next
+            else None
+        )
+
+        async for chunk in call_llm_with_tools(history, model_id, stream=True, tool_choice=tool_choice):
             response_chunks.append(chunk)
 
             # Process streaming content.
@@ -321,36 +475,39 @@ async def run_agent_loop(
                 if hasattr(delta, "content") and delta.content:
                     delta_text = delta.content
                     current_guard = ready_to_reply_guard
+                    pending_text_output += delta_text
 
-                    if last_stream_guard_state != current_guard:
-                        message = (
-                            "Sharing execution progress..."
-                            if current_guard
-                            else "Starting response generation..."
-                        )
+                    segments_to_emit = collect_output_segments(current_guard)
+                    for segment in segments_to_emit:
+                        if last_stream_guard_state != current_guard:
+                            message = (
+                                "Sharing execution progress..."
+                                if current_guard
+                                else "Starting response generation..."
+                            )
+                            yield sse_event(
+                                {
+                                    "type": "content_start",
+                                    "message": message,
+                                    "timestamp": get_timestamp(),
+                                    "guarded": current_guard,
+                                }
+                            )
+                            last_stream_guard_state = current_guard
+
+                        if current_guard:
+                            progress_buffer += segment
+                        else:
+                            full_content += segment
+
                         yield sse_event(
                             {
-                                "type": "content_start",
-                                "message": message,
+                                "type": "content_delta",
+                                "delta": segment,
                                 "timestamp": get_timestamp(),
                                 "guarded": current_guard,
                             }
                         )
-                        last_stream_guard_state = current_guard
-
-                    if current_guard:
-                        progress_buffer += delta_text
-                    else:
-                        full_content += delta_text
-
-                    yield sse_event(
-                        {
-                            "type": "content_delta",
-                            "delta": delta_text,
-                            "timestamp": get_timestamp(),
-                            "guarded": current_guard,
-                        }
-                    )
 
                 # Accumulate tool-call fragments.
                 if hasattr(delta, "tool_calls") and delta.tool_calls:
@@ -370,6 +527,40 @@ async def run_agent_loop(
                 # Track the finish reason as soon as it appears.
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
+
+        # Flush any remaining buffered text before evaluating finish_reason.
+        pending_segments = collect_output_segments(ready_to_reply_guard, final=True)
+        for segment in pending_segments:
+            current_guard = ready_to_reply_guard
+            if last_stream_guard_state != current_guard:
+                message = (
+                    "Sharing execution progress..."
+                    if current_guard
+                    else "Starting response generation..."
+                )
+                yield sse_event(
+                    {
+                        "type": "content_start",
+                        "message": message,
+                        "timestamp": get_timestamp(),
+                        "guarded": current_guard,
+                    }
+                )
+                last_stream_guard_state = current_guard
+
+            if current_guard:
+                progress_buffer += segment
+            else:
+                full_content += segment
+
+            yield sse_event(
+                {
+                    "type": "content_delta",
+                    "delta": segment,
+                    "timestamp": get_timestamp(),
+                    "guarded": current_guard,
+                }
+            )
 
         # Decide how to act on the streamed response.
         if finish_reason == "tool_calls" and tool_calls_buffer:
@@ -419,6 +610,10 @@ async def run_agent_loop(
             tool_call = tool_calls_buffer[0]
             tool_call_id = tool_call["id"]
             tool_name = tool_call["function"]["name"]
+            if isinstance(tool_name, str) and tool_name.startswith("functions."):
+                tool_name = tool_name.split(".", 1)[1]
+                tool_call["function"]["name"] = tool_name
+
             tool_arguments = tool_call["function"]["arguments"]
 
             try:
@@ -451,9 +646,12 @@ async def run_agent_loop(
             # Run the tool and capture success state.
             try:
                 tool_result = execute_tool(tool_name, tool_input, history, session_id)
-                tool_success = True
+                if isinstance(tool_result, dict) and "success" in tool_result:
+                    tool_success = bool(tool_result.get("success"))
+                else:
+                    tool_success = True
             except Exception as e:
-                tool_result = {"error": str(e)}
+                tool_result = {"success": False, "error": str(e)}
                 tool_success = False
 
             # Emit the tool_result event.
@@ -493,8 +691,47 @@ async def run_agent_loop(
                     last_stream_guard_state = None
 
             retry_count = 0  # Reset retry count.
+            force_reasoning_next = False
 
         elif finish_reason == "stop":
+            textual_calls = textual_calls_detected
+            if textual_calls:
+                retry_count += 1
+                if retry_count > config.MAX_RETRY_ON_MULTIPLE_TOOLS:
+                    yield sse_event(
+                        {
+                            "type": "error",
+                            "error_code": "TEXTUAL_TOOL_CALL_MAX_RETRIES",
+                            "error_message": (
+                                "Model repeatedly emitted raw JSON tool calls without using the structured tool-call channel."
+                            ),
+                            "timestamp": get_timestamp(),
+                        }
+                    )
+                    raise MultipleToolCallsError("Model emitted raw JSON tool calls after max retries")
+
+                reminder_message = (
+                    "You did not invoke the tool via the structured tool-call channel. "
+                    "Please regenerate your response using the proper tool call format, "
+                    "and do not output JSON directly in the text. Only one tool call is allowed per turn."
+                )
+
+                yield sse_event(
+                    {
+                        "type": "retry",
+                        "reason": "textual_tool_call",
+                        "retry_count": retry_count,
+                        "max_retries": config.MAX_RETRY_ON_MULTIPLE_TOOLS,
+                        "message": reminder_message,
+                        "timestamp": get_timestamp(),
+                    }
+                )
+
+                history.append({"role": "system", "content": reminder_message})
+                textual_calls_detected = []
+                force_reasoning_next = True
+                continue
+
             # Model produced a final answer; the stream already delivered deltas.
             if ready_to_reply_guard:
                 flush_progress_buffer()
@@ -516,6 +753,7 @@ async def run_agent_loop(
             message_id = save_assistant_message_to_db(
                 session_id, full_content, current_sequence, model_id, db, progress_segments
             )
+            force_reasoning_next = False
 
             # Signal that streaming is finished (no need to resend the text).
             yield sse_event({"type": "content_done", "timestamp": get_timestamp(), "guarded": False})
@@ -535,6 +773,36 @@ async def run_agent_loop(
             break
 
         else:
+            if finish_reason is None and not full_content and not tool_calls_buffer:
+                retry_count += 1
+                if retry_count > config.MAX_RETRY_ON_MULTIPLE_TOOLS:
+                    yield sse_event(
+                        {
+                            "type": "error",
+                            "error_code": "UNEXPECTED_FINISH_REASON",
+                            "error_message": "Model produced no content or tool call after multiple retries.",
+                            "timestamp": get_timestamp(),
+                        }
+                    )
+                    raise UnexpectedFinishReasonError("finish_reason None after retries")
+
+                reminder_message = (
+                    "Your previous response contained no valid text or tool call. "
+                    "Please call an appropriate tool or produce a natural-language answer."
+                )
+                yield sse_event(
+                    {
+                        "type": "retry",
+                        "reason": "empty_finish_reason",
+                        "retry_count": retry_count,
+                        "max_retries": config.MAX_RETRY_ON_MULTIPLE_TOOLS,
+                        "message": reminder_message,
+                        "timestamp": get_timestamp(),
+                    }
+                )
+                history.append({"role": "system", "content": reminder_message})
+                continue
+
             yield sse_event(
                 {
                     "type": "error",

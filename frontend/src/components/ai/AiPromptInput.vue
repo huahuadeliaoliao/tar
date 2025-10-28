@@ -231,7 +231,7 @@ function removeFile(index: number) {
         class="hidden"
         @change="handleFileSelect"
       />
-      <p class="mt-2 hidden text-center text-xs text-zinc-500 sm:block">
+      <p class="mt-2 hidden text-center text-xs text-zinc-500 dark:text-zinc-400 sm:block">
         按
         <kbd class="rounded-md bg-zinc-100 px-1.5 py-0.5 font-mono shadow-sm dark:bg-zinc-800"
           >Enter</kbd

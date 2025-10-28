@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { cn } from '@/utils/cn'
-import { X, ZoomIn } from 'lucide-vue-next'
+import { ExternalLink, X, ZoomIn } from 'lucide-vue-next'
 
 interface Props {
   src: string
@@ -17,8 +17,35 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const showModal = ref(false)
+const loadError = ref(false)
+
+const preferredSrc = computed(() => {
+  if (props.src.startsWith('//')) {
+    return `https:${props.src}`
+  }
+  if (props.src.startsWith('http://')) {
+    return `https://${props.src.slice('http://'.length)}`
+  }
+  return props.src
+})
+
+const currentSrc = ref(preferredSrc.value)
+
+watch(
+  () => props.src,
+  () => {
+    currentSrc.value = preferredSrc.value
+    loadError.value = false
+  },
+)
+
+watch(preferredSrc, (value) => {
+  currentSrc.value = value
+  loadError.value = false
+})
 
 function openPreview() {
+  if (loadError.value) return
   showModal.value = true
 }
 
@@ -29,6 +56,14 @@ function closePreview() {
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     closePreview()
+  }
+}
+
+function handleImageError() {
+  if (currentSrc.value !== props.src) {
+    currentSrc.value = props.src
+  } else {
+    loadError.value = true
   }
 }
 </script>
@@ -44,28 +79,48 @@ function handleKeydown(e: KeyboardEvent) {
         )
       "
       :style="thumbnail ? { maxHeight: maxHeight } : {}"
-      @click="thumbnail ? openPreview() : undefined"
+      @click="thumbnail && !loadError ? openPreview() : undefined"
     >
-      <img
-        :src="src"
-        :alt="alt || 'Image'"
-        :class="
-          cn(
-            'object-cover transition-transform duration-200',
-            thumbnail ? 'h-full w-full group-hover:scale-105' : 'w-full object-contain',
-          )
-        "
-        loading="lazy"
-      />
-      <div
-        v-if="thumbnail"
-        class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100"
-      >
+      <template v-if="!loadError">
+        <img
+          :src="currentSrc"
+          :alt="alt || 'Image'"
+          :class="
+            cn(
+              'object-cover transition-transform duration-200',
+              thumbnail ? 'h-full w-full group-hover:scale-105' : 'w-full object-contain',
+            )
+          "
+          loading="lazy"
+          @error="handleImageError"
+        />
         <div
-          class="flex items-center gap-2 rounded-lg bg-white/90 px-3 py-2 text-sm font-medium text-zinc-900 dark:bg-zinc-900/90 dark:text-white"
+          v-if="thumbnail"
+          class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100"
         >
-          <ZoomIn :size="16" />
-          <span>Click to view</span>
+          <div
+            class="flex items-center gap-2 rounded-lg bg-white/90 px-3 py-2 text-sm font-medium text-zinc-900 dark:bg-zinc-900/90 dark:text-white"
+          >
+            <ZoomIn :size="16" />
+            <span>Click to view</span>
+          </div>
+        </div>
+      </template>
+      <div
+        v-else
+        class="flex h-full w-full flex-col items-center justify-center gap-3 bg-zinc-50 px-4 py-6 text-center text-sm text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300"
+      >
+        <ExternalLink :size="20" />
+        <div class="flex flex-col gap-1">
+          <span>图片加载失败</span>
+          <a
+            :href="props.src"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-blue-600 hover:underline dark:text-blue-400"
+          >
+            在新标签页打开
+          </a>
         </div>
       </div>
     </div>
@@ -79,7 +134,7 @@ function handleKeydown(e: KeyboardEvent) {
         leave-to-class="opacity-0"
       >
         <div
-          v-if="showModal"
+          v-if="showModal && !loadError"
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm"
           @click="closePreview"
           @keydown="handleKeydown"
@@ -91,7 +146,7 @@ function handleKeydown(e: KeyboardEvent) {
             <X :size="24" />
           </button>
           <img
-            :src="src"
+            :src="currentSrc"
             :alt="alt || 'Image'"
             class="max-h-[90vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
             @click.stop

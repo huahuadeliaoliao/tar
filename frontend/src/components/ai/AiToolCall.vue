@@ -58,7 +58,7 @@ const statusConfig = computed(() => {
       @click="isOpen = !isOpen"
     >
       <div class="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-2">
-        <Wrench :size="16" class="shrink-0 text-zinc-500" />
+        <Wrench :size="16" class="shrink-0 text-zinc-500 dark:text-zinc-400" />
         <span class="truncate text-sm font-medium">{{ toolCall.name }}</span>
         <Badge :variant="statusConfig.variant" class="shrink-0">
           <component :is="statusConfig.icon" :size="14" />
@@ -67,7 +67,7 @@ const statusConfig = computed(() => {
       </div>
       <ChevronDown
         :size="16"
-        class="shrink-0 text-zinc-500 transition-transform"
+        class="shrink-0 text-zinc-500 dark:text-zinc-400 transition-transform"
         :class="{ 'rotate-180': isOpen }"
       />
     </button>
@@ -81,7 +81,9 @@ const statusConfig = computed(() => {
     >
       <div v-if="isOpen" class="overflow-hidden border-t border-zinc-200 dark:border-zinc-800">
         <div class="space-y-2 p-3 sm:p-4">
-          <h4 class="text-xs font-medium uppercase tracking-wide text-zinc-500">Parameters</h4>
+          <h4 class="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            Parameters
+          </h4>
           <div class="w-full overflow-x-auto rounded-xl bg-zinc-50 p-2.5 dark:bg-zinc-900 sm:p-3">
             <pre
               class="w-max max-w-full whitespace-pre text-xs"
@@ -89,7 +91,7 @@ const statusConfig = computed(() => {
           </div>
         </div>
         <div v-if="toolCall.output" class="space-y-2 p-3 pt-0 sm:p-4 sm:pt-0">
-          <h4 class="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          <h4 class="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
             {{ toolCall.status === 'error' ? 'Error' : 'Result' }}
           </h4>
           <div

@@ -210,7 +210,7 @@ function handleKeydown(event: KeyboardEvent) {
             :disabled="loading"
             @keydown="handleKeydown"
           />
-          <p class="mt-1.5 text-xs text-zinc-500">请联系管理员获取注册令牌</p>
+          <p class="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">请联系管理员获取注册令牌</p>
         </div>
         <Button type="submit" class="w-full" :disabled="loading">
           <Loader2 v-if="loading" :size="16" class="mr-2 animate-spin" />
@@ -230,6 +230,6 @@ function handleKeydown(event: KeyboardEvent) {
         </button>
       </div>
     </Card>
-    <p class="mt-8 text-center text-xs text-zinc-500">Powered by ActReply</p>
+    <p class="mt-8 text-center text-xs text-zinc-500 dark:text-zinc-400">Powered by ActReply</p>
   </div>
 </template>

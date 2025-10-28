@@ -33,6 +33,81 @@ const renderedContent = computed(() => {
   return marked.parse(displayContent.value)
 })
 
+function isValidHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function normalizeImageUrl(rawUrl: string): string | null {
+  let sanitized = rawUrl.trim().replace(/&amp;/gi, '&')
+  if (!sanitized) return null
+
+  if (sanitized.startsWith('//')) {
+    sanitized = `https:${sanitized}`
+  }
+
+  if (!/^https?:\/\//i.test(sanitized)) {
+    return null
+  }
+
+  const candidates: string[] = [sanitized]
+  const trailingChars = '),.;'
+
+  for (const candidate of candidates) {
+    if (isValidHttpUrl(candidate)) {
+      return candidate
+    }
+
+    let trimmed = candidate
+    while (trimmed.length > 0 && trailingChars.includes(trimmed.charAt(trimmed.length - 1))) {
+      trimmed = trimmed.slice(0, -1)
+      if (isValidHttpUrl(trimmed)) {
+        return trimmed
+      }
+    }
+  }
+
+  return null
+}
+
+function hasImageExtension(url: string): boolean {
+  const fragmentIndex = url.indexOf('#')
+  const withoutFragment = fragmentIndex === -1 ? url : url.slice(0, fragmentIndex)
+  const queryIndex = withoutFragment.indexOf('?')
+  const withoutQuery = queryIndex === -1 ? withoutFragment : withoutFragment.slice(0, queryIndex)
+  const imagePattern = /\.(?:png|jpe?g|gif|webp|bmp|svg)(?:![^/]*)?$/i
+  return imagePattern.test(withoutQuery)
+}
+
+const inlineImageUrls = computed(() => {
+  const pattern = /(https?:\/\/[^\s)]+)/gi
+  const attachmentUrls = new Set(
+    (props.files || [])
+      .filter((file) => file.type === 'image' && file.url)
+      .map((file) => file.url as string),
+  )
+  const urls = new Set<string>()
+
+  const source = props.content || ''
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(source)) !== null) {
+    const rawUrl = match[1]
+    if (!rawUrl) continue
+    const normalized = normalizeImageUrl(rawUrl)
+    if (!normalized) continue
+    if (!hasImageExtension(normalized)) continue
+    if (!attachmentUrls.has(normalized)) {
+      urls.add(normalized)
+    }
+  }
+
+  return Array.from(urls)
+})
+
 const contentRef = ref<HTMLElement | null>(null)
 
 function updateAnchorTargets() {
@@ -132,6 +207,17 @@ onUnmounted(() => {
       class="prose prose-sm min-w-0 max-w-none dark:prose-invert prose-p:my-3 prose-pre:my-3 prose-headings:mt-4 prose-headings:mb-2 prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-li:my-1 prose-ol:my-3 prose-ul:my-3 prose-blockquote:my-3 prose-blockquote:pl-3 prose-img:my-3 prose-strong:font-semibold prose-code:text-amber-600 dark:prose-code:text-amber-400"
       v-html="renderedContent"
     />
+    <div v-if="inlineImageUrls.length > 0" class="flex min-w-0 flex-wrap gap-2">
+      <AiImagePreview
+        v-for="url in inlineImageUrls"
+        :key="url"
+        :src="url"
+        :alt="`外部图像 ${url}`"
+        thumbnail
+        max-height="150px"
+        class="w-full sm:w-auto sm:max-w-[200px]"
+      />
+    </div>
   </div>
 </template>
 

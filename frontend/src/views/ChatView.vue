@@ -35,7 +35,7 @@ const messages = ref<Message[]>([])
 const loading = ref(false)
 const sidebarOpen = ref(false)
 const conversationRef = ref<InstanceType<typeof AiConversation>>()
-const pendingFiles = ref<(FileAttachment & { _file?: File })[]>([])
+const skipNextSessionLoad = ref(false)
 
 const editingTitle = ref(false)
 const editedTitle = ref('')
@@ -365,23 +365,56 @@ async function waitForFileProcessing(fileId: number, maxRetries: number = 120) {
 }
 
 async function handleSubmit(content: string, files: (FileAttachment & { _file?: File })[]) {
-  if (!sessionId.value) {
+  const trimmedContent = content.trim()
+  const hasMessage = trimmedContent.length > 0
+  const hasFiles = files.length > 0
+
+  if (!hasMessage && !hasFiles) {
+    return
+  }
+
+  let activeSessionId = sessionId.value
+
+  if (!activeSessionId) {
     try {
+      const initialTitle =
+        trimmedContent.length > 0
+          ? trimmedContent.slice(0, 50)
+          : files[0]?.name?.slice(0, 50) || '新对话'
+      const modelId =
+        sessionsStore.selectedModelId ||
+        sessionsStore.models[0]?.id ||
+        sessionsStore.currentSession?.model_id ||
+        ''
+
       const session = await sessionsStore.createSession({
-        title: content.slice(0, 50),
-        model_id: sessionsStore.selectedModelId,
+        title: initialTitle,
+        model_id: modelId,
       })
 
-      pendingFiles.value = files
+      activeSessionId = session.id
+      skipNextSessionLoad.value = true
+      messages.value = []
+      sessionsStore.setCurrentSession(session.id)
 
-      router.push(`/chat/${session.id}`)
-      return
+      await router.push(`/chat/${session.id}`)
+      await nextTick()
     } catch (error) {
       console.error('Failed to create session:', error)
       return
     }
   }
 
+  if (!activeSessionId) return
+
+  await sendMessageToSession(activeSessionId, trimmedContent, files)
+}
+
+async function sendMessageToSession(
+  targetSessionId: number,
+  content: string,
+  files: (FileAttachment & { _file?: File })[],
+) {
   const messageContent = content.trim() || (files.length > 0 ? '[上传了文件]' : '')
 
   let uploadedFiles: FileAttachment[] = []
@@ -519,7 +552,7 @@ async function handleSubmit(content: string, files: (FileAttachment & { _file?: 
     let sseConnected = false
 
     for await (const event of chatApi.streamChat({
-      session_id: sessionId.value,
+      session_id: targetSessionId,
       message: messageContent,
       files: fileIds.length > 0 ? fileIds : undefined,
     })) {
@@ -567,7 +600,7 @@ async function handleSubmit(content: string, files: (FileAttachment & { _file?: 
       thinkingState.endTime = Date.now()
     }
 
-    sessionsStore.touchSession(sessionId.value)
+    sessionsStore.touchSession(targetSessionId)
   } catch (error: any) {
     console.error('Chat error:', error)
     const msg = messages.value[messageIndex] as AssistantMessage
@@ -758,12 +791,12 @@ function cancelEditModel() {
 watch(
   () => route.params.id,
   async () => {
-    await loadSessionMessages()
-    sessionsStore.setCurrentSession(sessionId.value)
-
-    if (pendingFiles.value.length > 0 && sessionId.value) {
-      pendingFiles.value = []
+    if (skipNextSessionLoad.value) {
+      skipNextSessionLoad.value = false
+    } else {
+      await loadSessionMessages()
     }
+    sessionsStore.setCurrentSession(sessionId.value)
   },
   { immediate: true },
 )
@@ -884,7 +917,7 @@ onMounted(() => {
             <h2 class="text-2xl font-bold text-zinc-900 dark:text-zinc-100 sm:text-3xl">
               你好！我是 tar 智能助手
             </h2>
-            <p class="mt-2 text-sm text-zinc-500 sm:text-base">
+            <p class="mt-2 text-sm text-zinc-500 dark:text-zinc-400 sm:text-base">
               我可以帮你回答问题、分析文件、执行任务
             </p>
             <p class="mt-1 text-xs text-zinc-400 sm:text-sm">支持图片、PDF、Word、PPT 文件上传</p>

@@ -69,7 +69,7 @@ function formatSize(bytes: number): string {
       <p class="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">
         {{ file.name }}
       </p>
-      <p class="text-[10px] text-zinc-500">
+      <p class="text-[10px] text-zinc-500 dark:text-zinc-400">
         {{ fileConfig.label }}<template v-if="file.size"> · {{ formatSize(file.size) }}</template>
       </p>
     </div>
@@ -78,7 +78,7 @@ function formatSize(bytes: number): string {
       class="shrink-0 rounded-lg p-1 opacity-0 transition-opacity hover:bg-zinc-100 group-hover:opacity-100 dark:hover:bg-zinc-800"
       @click="emit('remove')"
     >
-      <X :size="14" class="text-zinc-500" />
+      <X :size="14" class="text-zinc-500 dark:text-zinc-400" />
     </button>
   </div>
 </template>

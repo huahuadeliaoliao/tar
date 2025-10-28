@@ -141,8 +141,8 @@ function formatDate(dateString: string): string {
 
       <div v-else-if="sessionsStore.sessions.length === 0" class="px-4 py-8 text-center">
         <MessageSquare :size="32" class="mx-auto mb-2 text-zinc-300 dark:text-zinc-700" />
-        <p class="text-sm text-zinc-500">还没有对话</p>
-        <p class="mt-1 text-xs text-zinc-400">点击上方按钮开始新对话</p>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400">还没有对话</p>
+        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">点击上方按钮开始新对话</p>
       </div>
 
       <div v-else class="space-y-1">
@@ -182,7 +182,7 @@ function formatDate(dateString: string): string {
                 >
                   {{ session.model_id.split('-')[0] }}
                 </Badge>
-                <span class="text-xs text-zinc-500">
+                <span class="text-xs text-zinc-500 dark:text-zinc-400">
                   {{ formatDate(session.updated_at) }}
                 </span>
               </div>
@@ -209,7 +209,7 @@ function formatDate(dateString: string): string {
           <p class="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
             {{ authStore.user?.username }}
           </p>
-          <p class="text-xs text-zinc-500">在线</p>
+          <p class="text-xs text-zinc-500 dark:text-zinc-400">在线</p>
         </div>
 
         <Button variant="ghost" size="icon" class="h-8 w-8 shrink-0" @click="handleLogout">

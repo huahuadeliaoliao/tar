@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable
 
-
 def encode(payload: Dict[str, Any], key: str, algorithm: str = ...) -> str: ...
 
 

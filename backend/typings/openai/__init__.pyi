@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 class _ChatCompletions:
     def create(self, *args: Any, **kwargs: Any) -> Any: ...
 

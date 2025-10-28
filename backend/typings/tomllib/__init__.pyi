@@ -1,6 +1,5 @@
 from typing import Any, BinaryIO
 
-
 def load(__fp: BinaryIO, /) -> dict[str, Any]: ...
 
 

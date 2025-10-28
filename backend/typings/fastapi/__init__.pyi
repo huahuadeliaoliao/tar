@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-
 class FastAPI:
     def __init__(self, *args: Any, **kwargs: Any) -> None: ...
 

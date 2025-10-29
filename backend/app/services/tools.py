@@ -166,6 +166,7 @@ def _format_results(
 
     return formatted
 
+
 # Tool definitions.
 AVAILABLE_TOOLS = [
     {
@@ -528,7 +529,9 @@ def execute_ddgs_search(tool_input: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         clean_items = [{k: v for k, v in item.items() if not str(k).startswith("_")} for item in result.items]
-        formatted_results = _format_results(clean_items, category=category, backend=backend, requested_fields=collect_fields)
+        formatted_results = _format_results(
+            clean_items, category=category, backend=backend, requested_fields=collect_fields
+        )
 
         meta: Dict[str, Any] = {
             "query": query,
@@ -705,7 +708,8 @@ def execute_reasoning(
 
     if tool_calls:
         summary_lines.append(
-            "Recent tool activity:\n" + "\n".join(format_tool_call_line(idx, tc) for idx, tc in enumerate(tool_calls, 1))
+            "Recent tool activity:\n"
+            + "\n".join(format_tool_call_line(idx, tc) for idx, tc in enumerate(tool_calls, 1))
         )
     else:
         summary_lines.append("No tools have been used yet.")

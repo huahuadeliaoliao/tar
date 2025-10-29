@@ -6,7 +6,6 @@ class DDGS:
     threads: Optional[int]
 
     def __init__(self, proxy: Optional[str] = ..., timeout: Optional[int] = ..., verify: bool = ...) -> None: ...
-
     def text(
         self,
         query: str,
@@ -18,7 +17,6 @@ class DDGS:
         backend: str = ...,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]: ...
-
     def images(
         self,
         query: str,
@@ -30,7 +28,6 @@ class DDGS:
         backend: str = ...,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]: ...
-
     def news(
         self,
         query: str,
@@ -42,7 +39,6 @@ class DDGS:
         backend: str = ...,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]: ...
-
     def videos(
         self,
         query: str,
@@ -54,7 +50,6 @@ class DDGS:
         backend: str = ...,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]: ...
-
     def books(
         self,
         query: str,
@@ -67,8 +62,5 @@ class DDGS:
         **kwargs: Any,
     ) -> List[Dict[str, Any]]: ...
 
-
 class TimeoutException(Exception): ...
-
-
 class DDGSException(Exception): ...

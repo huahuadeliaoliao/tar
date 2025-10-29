@@ -384,11 +384,7 @@ async def run_agent_loop(
                     break
 
             if raw_arguments is None:
-                candidates = {
-                    k: v
-                    for k, v in obj.items()
-                    if k not in {"id", "type", "name", "tool_name", "function"}
-                }
+                candidates = {k: v for k, v in obj.items() if k not in {"id", "type", "name", "tool_name", "function"}}
                 raw_arguments = candidates or obj
 
             if not name and isinstance(raw_arguments, dict):
@@ -460,11 +456,7 @@ async def run_agent_loop(
         # Stream deltas in real time while also storing the full text.
         full_content = ""
 
-        tool_choice = (
-            {"type": "function", "function": {"name": "reasoning"}}
-            if force_reasoning_next
-            else None
-        )
+        tool_choice = {"type": "function", "function": {"name": "reasoning"}} if force_reasoning_next else None
 
         async for chunk in call_llm_with_tools(history, model_id, stream=True, tool_choice=tool_choice):
             response_chunks.append(chunk)
@@ -481,9 +473,7 @@ async def run_agent_loop(
                     for segment in segments_to_emit:
                         if last_stream_guard_state != current_guard:
                             message = (
-                                "Sharing execution progress..."
-                                if current_guard
-                                else "Starting response generation..."
+                                "Sharing execution progress..." if current_guard else "Starting response generation..."
                             )
                             yield sse_event(
                                 {
@@ -533,11 +523,7 @@ async def run_agent_loop(
         for segment in pending_segments:
             current_guard = ready_to_reply_guard
             if last_stream_guard_state != current_guard:
-                message = (
-                    "Sharing execution progress..."
-                    if current_guard
-                    else "Starting response generation..."
-                )
+                message = "Sharing execution progress..." if current_guard else "Starting response generation..."
                 yield sse_event(
                     {
                         "type": "content_start",

@@ -80,9 +80,7 @@ class Config:
         self.DDGS_CACHE_TTL_SECONDS: int = int(
             os.getenv("DDGS_CACHE_TTL_SECONDS", ddgs_data.get("cache_ttl_seconds", 60))
         )
-        self.DDGS_CACHE_MAXSIZE: int = int(
-            os.getenv("DDGS_CACHE_MAXSIZE", ddgs_data.get("cache_maxsize", 128))
-        )
+        self.DDGS_CACHE_MAXSIZE: int = int(os.getenv("DDGS_CACHE_MAXSIZE", ddgs_data.get("cache_maxsize", 128)))
 
         self.LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", llm.get("temperature", 0.5)))
         self.LLM_TOP_P: float = float(os.getenv("LLM_TOP_P", llm.get("top_p", 1.0)))

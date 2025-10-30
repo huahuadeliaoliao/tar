@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import logging
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -13,6 +14,8 @@ from app.models import File, FileImage, Message
 from app.services.llm import call_llm_with_tools
 from app.services.tools import execute_tool
 from app.utils.helpers import get_timestamp, sse_event
+
+logger = logging.getLogger(__name__)
 
 ASSISTANT_ARTIFACT_TOOL_NAME = "__assistant_artifact__"
 
@@ -37,7 +40,10 @@ def load_complete_history(session_id: int, db: Session) -> List[Dict[str, Any]]:
     """
     messages = db.query(Message).filter(Message.session_id == session_id).order_by(Message.sequence).all()
 
-    history = []
+    history: List[Dict[str, Any]] = []
+    pending_tool_calls: Dict[str, Dict[str, int]] = {}
+    unmatched_tool_messages = 0
+
     for msg in messages:
         if msg.role == "user":
             # User messages may contain both text and images.
@@ -48,18 +54,18 @@ def load_complete_history(session_id: int, db: Session) -> List[Dict[str, Any]]:
             if msg.tool_call_id:
                 # Assistant tool calls include serialized arguments.
                 tool_input = json.loads(msg.tool_input) if msg.tool_input else {}
-                history.append(
-                    {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": msg.tool_call_id,
-                                "type": "function",
-                                "function": {"name": msg.tool_name, "arguments": json.dumps(tool_input)},
-                            }
-                        ],
-                    }
-                )
+                history_entry = {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": msg.tool_call_id,
+                            "type": "function",
+                            "function": {"name": msg.tool_name, "arguments": json.dumps(tool_input)},
+                        }
+                    ],
+                }
+                history.append(history_entry)
+                pending_tool_calls[msg.tool_call_id] = {"index": len(history) - 1, "sequence": msg.sequence}
             elif msg.tool_name != ASSISTANT_ARTIFACT_TOOL_NAME:
                 assistant_content = msg.content or ""
                 assistant_parsed: Dict[str, Any] | List[Dict[str, Any]] | None = None
@@ -102,7 +108,27 @@ def load_complete_history(session_id: int, db: Session) -> List[Dict[str, Any]]:
             if isinstance(parsed_output, dict):
                 content_value = build_tool_message_content(parsed_output)
 
-            history.append({"role": "tool", "tool_call_id": msg.tool_call_id, "content": content_value})
+            if msg.tool_call_id and msg.tool_call_id in pending_tool_calls:
+                pending_tool_calls.pop(msg.tool_call_id, None)
+                history.append({"role": "tool", "tool_call_id": msg.tool_call_id, "content": content_value})
+            else:
+                # Discard orphaned tool responses to keep the conversation valid for the OpenAI API.
+                unmatched_tool_messages += 1
+
+    if unmatched_tool_messages:
+        logger.warning("Discarded %d tool message(s) due to missing assistant tool call.", unmatched_tool_messages)
+
+    if pending_tool_calls:
+        # Remove assistant tool-call messages that never received a tool response.
+        logger.warning(
+            "Removing %d assistant tool-call message(s) lacking tool responses: %s",
+            len(pending_tool_calls),
+            ", ".join(sorted(pending_tool_calls.keys())),
+        )
+        indexes_to_remove = sorted({info["index"] for info in pending_tool_calls.values()}, reverse=True)
+        for idx in indexes_to_remove:
+            if 0 <= idx < len(history):
+                history.pop(idx)
 
     return history
 

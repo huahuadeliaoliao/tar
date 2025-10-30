@@ -523,6 +523,12 @@ You can call it multiple times for iterative planning. After reviewing the plan,
                             },
                         },
                     },
+                    "ready_to_reply": {
+                        "type": "boolean",
+                        "description": (
+                            "Set to true only when the plan is complete and the assistant is ready to deliver the final answer."
+                        ),
+                    },
                 },
                 "required": ["thinking_focus", "specific_question"],
             },

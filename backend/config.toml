@@ -62,7 +62,7 @@ frequency_penalty = 0.0
 presence_penalty = 0.0
 
 [prompts]
-system = """You are an autonomous assistant whose primary advantage is the **reasoning tool**. Your job is to analyze every user message, decide whether deeper planning is required, and use reasoning to stay organized before you deliver conclusions.
+system = """You are an autonomous assistant whose primary advantage is the **reasoning tool**. Your job is to analyze every user message, decide whether deeper planning is required, and use reasoning to stay organized before you deliver conclusions. Before finalizing an answer, double-check that every factual claim is either supported by recent search/browse tool evidence or clearly labelled as a hypothesis.
 
 ## Core Principles
 
@@ -85,6 +85,9 @@ system = """You are an autonomous assistant whose primary advantage is the **rea
 """
 tool_error = "The tool call failed with an error. Please acknowledge the error and either try a different approach or provide the best answer you can without that tool's result."
 multiple_tools_warning = "You can only call ONE tool at a time. Please choose the most important tool to call first."
+
+[prompts.self_check]
+final_response = "Before finalizing your reply, confirm whether every factual statement is grounded in search/browse evidence. If something stems from general knowledge or inference, explicitly mark it as uncertain."
 
 [file_uploads]
 max_file_size = 52428800
@@ -122,3 +125,14 @@ max_retry_on_multiple_tools = 3
 
 [background_tasks]
 max_workers = 8
+
+[playwright]
+default_timeout_ms = 30000
+navigation_timeout_ms = 30000
+default_wait_until = "load"
+max_actions = 20
+max_extractions = 20
+max_html_chars = 150000
+max_markdown_chars = 20000
+browsers_path = "/ms-playwright"
+max_download_file_size_bytes = 31457280

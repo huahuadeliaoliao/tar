@@ -48,6 +48,7 @@ The backend reads all runtime settings from `config.toml` (located at the reposi
 | `[file_uploads]`     | File size limit, allowed MIME types, and image compression settings. |
 | `[libreoffice]`      | CLI path and timeout values for LibreOffice conversions.             |
 | `[agent]`            | Agent loop guard rails (max iterations, tool retry limit).           |
+| `[playwright]`       | Timeouts and limits for the Playwright browsing tool.                |
 | `[background_tasks]` | Worker pool size for background document processing.                 |
 
 ## Example snippet

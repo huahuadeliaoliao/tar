@@ -45,6 +45,9 @@ dependencies = [
   # OpenAI client
   "openai>=2.6.1", # OpenAI client SDK
 
+  # Browser automation
+  "playwright>=1.55.0", # Headless browser automation for web inspection
+
   # Image processing
   "pillow>=11.0.0", # Image manipulation
 
@@ -55,6 +58,7 @@ dependencies = [
   "python-docx>=1.1.2", # Word document helper
   "python-pptx>=1.0.2", # PowerPoint helper
   "ddgs==9.6.1",        # Metasearch library
+  "markitdown[all]>=0.1.0", # Markdown conversion pipeline for captured content
 ]
 
 [project.optional-dependencies]

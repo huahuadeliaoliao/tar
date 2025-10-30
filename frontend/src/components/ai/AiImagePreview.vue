@@ -3,17 +3,21 @@ import { computed, ref, watch } from 'vue'
 import { cn } from '@/utils/cn'
 import { ExternalLink, X, ZoomIn } from 'lucide-vue-next'
 
+type ThumbnailOverlay = 'default' | 'icon' | 'none'
+
 interface Props {
   src: string
   alt?: string
   class?: string
   thumbnail?: boolean
   maxHeight?: string
+  thumbnailOverlay?: ThumbnailOverlay
 }
 
 const props = withDefaults(defineProps<Props>(), {
   thumbnail: false,
   maxHeight: '200px',
+  thumbnailOverlay: 'default',
 })
 
 const showModal = ref(false)
@@ -66,6 +70,11 @@ function handleImageError() {
     loadError.value = true
   }
 }
+
+defineExpose({
+  openPreview,
+  closePreview,
+})
 </script>
 
 <template>
@@ -94,17 +103,25 @@ function handleImageError() {
           loading="lazy"
           @error="handleImageError"
         />
-        <div
-          v-if="thumbnail"
-          class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100"
-        >
+        <template v-if="thumbnail">
           <div
-            class="flex items-center gap-2 rounded-lg bg-white/90 px-3 py-2 text-sm font-medium text-zinc-900 dark:bg-zinc-900/90 dark:text-white"
+            v-if="props.thumbnailOverlay === 'default'"
+            class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100"
           >
-            <ZoomIn :size="16" />
-            <span>Click to view</span>
+            <div
+              class="flex items-center gap-2 rounded-lg bg-white/90 px-3 py-2 text-sm font-medium text-zinc-900 dark:bg-zinc-900/90 dark:text-white"
+            >
+              <ZoomIn :size="16" />
+              <span>Click to view</span>
+            </div>
           </div>
-        </div>
+          <div
+            v-else-if="props.thumbnailOverlay === 'icon'"
+            class="pointer-events-none absolute right-2 top-2 flex size-6 items-center justify-center rounded-full bg-black/50 text-white opacity-0 transition-opacity group-hover:opacity-100"
+          >
+            <ZoomIn :size="14" />
+          </div>
+        </template>
       </template>
       <div
         v-else

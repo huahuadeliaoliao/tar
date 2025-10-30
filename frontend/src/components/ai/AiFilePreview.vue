@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { cn } from '@/utils/cn'
 import { FileText, FileImage, Presentation, X } from 'lucide-vue-next'
+import AiImagePreview from './AiImagePreview.vue'
 import type { FileAttachment } from '@/types/chat'
 
 interface Props {
@@ -49,6 +50,9 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
+
+const isImageAttachment = computed(() => props.file.type === 'image' && Boolean(props.file.url))
+const imagePreviewRef = ref<InstanceType<typeof AiImagePreview> | null>(null)
 </script>
 
 <template>
@@ -60,10 +64,23 @@ function formatSize(bytes: number): string {
       )
     "
   >
-    <div
-      :class="cn('flex size-8 shrink-0 items-center justify-center rounded-lg', fileConfig.color)"
-    >
-      <component :is="fileConfig.icon" :size="16" />
+    <div class="flex size-12 shrink-0 items-center justify-center">
+      <AiImagePreview
+        v-if="isImageAttachment"
+        ref="imagePreviewRef"
+        :src="file.url as string"
+        :alt="file.name"
+        thumbnail
+        max-height="48px"
+        thumbnail-overlay="icon"
+        class="size-12 !rounded-lg !border-none"
+      />
+      <div
+        v-else
+        :class="cn('flex size-12 items-center justify-center rounded-lg', fileConfig.color)"
+      >
+        <component :is="fileConfig.icon" :size="18" />
+      </div>
     </div>
     <div class="min-w-0 flex-1">
       <p class="truncate text-xs font-medium text-zinc-900 dark:text-zinc-100">

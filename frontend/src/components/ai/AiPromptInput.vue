@@ -162,6 +162,43 @@ function removeFile(index: number) {
   }
   attachedFiles.value.splice(index, 1)
 }
+
+function appendPastedFiles(files: File[]) {
+  for (const file of files) {
+    const fileAttachment: FileAttachment & { _file?: File } = {
+      id: Date.now() + Math.random(),
+      name: file.name || `image-${Date.now()}`,
+      type: 'image',
+      mimeType: file.type,
+      size: file.size,
+      url: URL.createObjectURL(file),
+      _file: file,
+    }
+
+    attachedFiles.value.push(fileAttachment)
+  }
+}
+
+function handlePaste(event: ClipboardEvent) {
+  const items = event.clipboardData?.items
+  if (!items) return
+
+  const imageFiles: File[] = []
+
+  for (const item of items) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const file = item.getAsFile()
+      if (file) {
+        imageFiles.push(file)
+      }
+    }
+  }
+
+  if (imageFiles.length === 0) return
+
+  event.preventDefault()
+  appendPastedFiles(imageFiles)
+}
 </script>
 
 <template>
@@ -210,6 +247,7 @@ function removeFile(index: number) {
             rows="1"
             @input="adjustHeight"
             @keydown="handleKeydown"
+            @paste="handlePaste"
           />
         </div>
         <Button

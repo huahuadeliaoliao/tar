@@ -1,12 +1,29 @@
 """Tool definitions and execution helpers."""
 
+import base64
+import io
 import logging
+import zipfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import unquote, urlparse
 from zoneinfo import ZoneInfo
 
+from playwright.sync_api import Error as PlaywrightError
+
 from app.config import config
+from app.database import SessionLocal
+from app.models import File, FileImage
+from app.models import Session as SessionModel
 from app.services.ddgs_client import DDGSSearchError, get_ddgs_client
+from app.services.file_handler import (
+    FileProcessingError,
+    compress_image,
+    convert_docx_ppt_to_images,
+    convert_pdf_to_images,
+)
+from app.services.playwright_client import playwright_manager
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +206,136 @@ AVAILABLE_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "playwright_browse",
+            "description": (
+                "Open a web page in a headless browser, perform simple interactions, and extract structured content or "
+                "screenshots. HTML extractions are converted to Markdown and truncated to control token usage, so choose "
+                "specific selectors (e.g., 'main', '.markdown-body') for best results."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute URL to open.",
+                    },
+                    "wait_until": {
+                        "type": "string",
+                        "enum": ["load", "domcontentloaded", "networkidle", "commit"],
+                        "description": "Navigation readiness signal to wait for. Defaults to 'load'.",
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Override navigation timeout in milliseconds.",
+                    },
+                    "actions": {
+                        "type": "array",
+                        "description": "Optional action list executed after navigation. Supported types: click, fill, wait_for_selector, wait_for_timeout.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["click", "fill", "wait_for_selector", "wait_for_timeout"],
+                                },
+                                "selector": {"type": "string"},
+                                "value": {"type": ["string", "number", "boolean"]},
+                                "button": {"type": "string", "enum": ["left", "middle", "right"]},
+                                "click_count": {"type": "integer", "minimum": 1},
+                                "force": {"type": "boolean"},
+                                "state": {
+                                    "type": "string",
+                                    "enum": ["attached", "detached", "visible", "hidden"],
+                                },
+                                "duration_ms": {"type": "integer", "minimum": 0},
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                    "extract": {
+                        "type": "array",
+                        "description": (
+                            "Extraction instructions. Supported types: inner_text, all_inner_texts, attribute, html, "
+                            "outer_html, count, evaluate. html/outer_html results are returned as Markdown with length limits."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "inner_text",
+                                        "all_inner_texts",
+                                        "attribute",
+                                        "html",
+                                        "outer_html",
+                                        "count",
+                                        "evaluate",
+                                    ],
+                                },
+                                "selector": {"type": "string"},
+                                "name": {"type": "string"},
+                                "attribute": {"type": "string"},
+                                "expression": {"type": "string"},
+                                "index": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "description": "When provided, operate on the nth matching element (0-based).",
+                                },
+                                "pick_first": {
+                                    "type": "boolean",
+                                    "description": "When true, automatically use the first matching element to avoid strict-mode violations.",
+                                },
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                    "screenshot": {
+                        "description": "Capture a screenshot. Use true for a viewport screenshot or provide an object with optional 'full_page' and 'selector'.",
+                        "type": ["boolean", "object"],
+                        "properties": {
+                            "full_page": {"type": "boolean"},
+                            "selector": {"type": "string"},
+                        },
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "download_and_convert_file",
+            "description": (
+                "Download a remote PDF, DOCX, or image file over HTTP(S), convert it into WebP images, and return the"
+                " resulting pages for analysis. Invoke this only when you actually need to inspect the document contents."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_url": {
+                        "type": "string",
+                        "description": "Direct HTTP(S) URL of the file to download.",
+                    },
+                    "file_type": {
+                        "type": "string",
+                        "enum": ["pdf", "docx", "image"],
+                        "description": "Expected file type. Use 'pdf', 'docx', or 'image'.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional comments to log alongside the download request.",
+                    },
+                },
+                "required": ["file_url", "file_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ddgs_search",
             "description": (
                 "Search the live web via DDGS metasearch. Provide focused queries, optionally specify category/backends, "
@@ -295,7 +442,7 @@ Best used when:
 - Execution is stuck and you must rethink strategy
 - You must break down a multi-step task
 
-You can call it multiple times for iterative planning.""",
+You can call it multiple times for iterative planning. After reviewing the plan, be sure to summarize any confirmed facts gathered via search/browse tools, list outstanding evidence needed, and note any parts that would be speculative without verification.""",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -313,6 +460,21 @@ You can call it multiple times for iterative planning.""",
                     "specific_question": {
                         "type": "string",
                         "description": 'Specific question to consider, e.g., "How should we implement auth next?", "Why did the previous step fail?", "How do we break down this task?"',
+                    },
+                    "search_evidence": {
+                        "type": "array",
+                        "description": (
+                            "Optional list of confirmed facts gathered from recent search/browse tools. "
+                            "Include objects with keys like 'fact', 'source', and 'confidence'."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "fact": {"type": "string"},
+                                "source": {"type": "string"},
+                                "confidence": {"type": ["string", "number"]},
+                            },
+                        },
                     },
                 },
                 "required": ["thinking_focus", "specific_question"],
@@ -345,6 +507,10 @@ def execute_tool(
         return execute_ddgs_search(tool_input)
     elif tool_name == "ai_search_web":
         return execute_ai_search_web(tool_input)
+    elif tool_name == "playwright_browse":
+        return execute_playwright_browse(tool_input)
+    elif tool_name == "download_and_convert_file":
+        return execute_download_and_convert_file(tool_input, session_id)
     elif tool_name == "reasoning":
         return execute_reasoning(tool_input, messages_history or [], session_id or 0)
     else:
@@ -673,8 +839,9 @@ def execute_reasoning(
     user_messages = [m for m in messages_history if m.get("role") == "user"]
     initial_goal = extract_text_content(user_messages[0].get("content", "")) if user_messages else ""
 
-    # Track tool call history.
+    # Track tool call history and collect evidence from search/browse tools.
     tool_calls = []
+    search_evidence: List[Dict[str, Any]] = []
     for msg in messages_history:
         if msg.get("role") == "assistant" and msg.get("tool_calls"):
             for tc in msg["tool_calls"]:
@@ -714,23 +881,245 @@ def execute_reasoning(
     else:
         summary_lines.append("No tools have been used yet.")
 
+    provided_evidence = tool_input.get("search_evidence")
+    if isinstance(provided_evidence, list):
+        sanitized_evidence: List[Dict[str, str]] = []
+        for item in provided_evidence:
+            if isinstance(item, dict):
+                fact = str(item.get("fact", "")).strip()
+                source = str(item.get("source", "")).strip()
+                confidence_raw = item.get("confidence")
+                confidence = str(confidence_raw).strip() if confidence_raw is not None else ""
+                if fact:
+                    evidence_entry = {"fact": fact}
+                    if source:
+                        evidence_entry["source"] = source
+                    if confidence:
+                        evidence_entry["confidence"] = confidence
+                    sanitized_evidence.append(evidence_entry)
+            elif isinstance(item, str):
+                fact = item.strip()
+                if fact:
+                    sanitized_evidence.append({"fact": fact})
+        if sanitized_evidence:
+            search_evidence = sanitized_evidence
+
     # Construct a high-level plan.
     plan = build_plan(thinking_focus, tool_calls, user_messages)
-
-    # Decide whether the agent is ready to answer on the next turn.
-    ready_to_reply = should_reply(tool_calls, plan)
 
     return {
         "success": True,
         "summary": "\n".join(summary_lines),
         "plan": plan,
-        "ready_to_reply": ready_to_reply,
+        "ready_to_reply": bool(tool_input.get("ready_to_reply", False)),
+        "search_evidence": search_evidence or [],
         "stats": {
             "total_tool_calls": len(tool_calls),
             "successful_calls": len([tc for tc in tool_calls if tc["success"]]),
             "failed_calls": len([tc for tc in tool_calls if not tc["success"]]),
             "user_interactions": len(user_messages),
         },
+    }
+
+
+def execute_playwright_browse(tool_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Inspect a web page using the shared Playwright manager."""
+    if not isinstance(tool_input, dict):
+        return {
+            "success": False,
+            "error": "invalid_arguments",
+            "detail": "Tool input must be an object.",
+            "logs": [],
+        }
+    return playwright_manager.browse(tool_input)
+
+
+def execute_download_and_convert_file(tool_input: Dict[str, Any], session_id: Optional[int]) -> Dict[str, Any]:
+    """Download a remote document and convert it to WebP images."""
+    if session_id in (None, 0):
+        return {
+            "success": False,
+            "error": "missing_session",
+            "detail": "Session context is required to store converted files.",
+        }
+
+    if not isinstance(tool_input, dict):
+        return {
+            "success": False,
+            "error": "invalid_arguments",
+            "detail": "Tool input must be an object.",
+        }
+
+    file_url_raw = tool_input.get("file_url")
+    file_type_raw = tool_input.get("file_type")
+
+    if not isinstance(file_url_raw, str) or not file_url_raw.strip():
+        return {
+            "success": False,
+            "error": "invalid_url",
+            "detail": "Parameter 'file_url' must be a non-empty string.",
+        }
+    file_url = file_url_raw.strip()
+
+    if not isinstance(file_type_raw, str) or not file_type_raw.strip():
+        return {
+            "success": False,
+            "error": "invalid_file_type",
+            "detail": "Parameter 'file_type' must be one of 'pdf', 'docx', or 'image'.",
+        }
+
+    file_type = file_type_raw.strip().lower()
+    if file_type not in {"pdf", "docx", "image"}:
+        return {
+            "success": False,
+            "error": "unsupported_file_type",
+            "detail": "Supported file types are 'pdf', 'docx', and 'image'.",
+        }
+
+    parsed_url = urlparse(file_url)
+    if parsed_url.scheme not in {"http", "https"}:
+        return {
+            "success": False,
+            "error": "unsupported_scheme",
+            "detail": "Only http and https URLs are supported for downloads.",
+        }
+
+    try:
+        file_bytes, response_headers = playwright_manager.download_file(
+            file_url, timeout=config.PLAYWRIGHT_NAVIGATION_TIMEOUT_MS
+        )
+    except PlaywrightError as exc:  # pragma: no cover - depends on runtime environment
+        return {
+            "success": False,
+            "error": "download_failed",
+            "detail": str(exc),
+        }
+
+    if not file_bytes:
+        return {
+            "success": False,
+            "error": "empty_file",
+            "detail": "Downloaded file was empty.",
+        }
+
+    max_size = max(config.PLAYWRIGHT_MAX_DOWNLOAD_SIZE_BYTES, 0)
+    if max_size and len(file_bytes) > max_size:
+        return {
+            "success": False,
+            "error": "file_too_large",
+            "detail": (f"File size {len(file_bytes)} bytes exceeds the configured limit of {max_size} bytes."),
+        }
+
+    try:
+        if file_type == "docx":
+            images = convert_docx_ppt_to_images(file_bytes, "docx")
+        elif file_type == "pdf":
+            images = convert_pdf_to_images(file_bytes)
+        else:
+            compressed, width, height = compress_image(file_bytes, config.IMAGE_MAX_DIMENSION)
+            images = [(compressed, width, height)]
+    except FileProcessingError as exc:
+        return {
+            "success": False,
+            "error": "conversion_failed",
+            "detail": str(exc),
+        }
+    except Exception as exc:  # pragma: no cover - defensive guard
+        return {
+            "success": False,
+            "error": "conversion_failed",
+            "detail": str(exc),
+        }
+
+    if not images:
+        return {
+            "success": False,
+            "error": "conversion_empty",
+            "detail": "No images were produced during conversion.",
+        }
+
+    db = SessionLocal()
+    try:
+        session_record = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+        if session_record is None:
+            return {
+                "success": False,
+                "error": "session_not_found",
+                "detail": f"Session {session_id} was not found.",
+            }
+
+        user_id = session_record.user_id
+        url_path = unquote(parsed_url.path or "")
+        original_name = Path(url_path).name or f"downloaded.{file_type}"
+
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, mode="w") as zip_file:
+            for idx, (img_bytes, _, _) in enumerate(images, start=1):
+                zip_file.writestr(f"page_{idx}.webp", img_bytes)
+        archive_bytes = archive_buffer.getvalue()
+
+        new_file = File(
+            user_id=user_id,
+            filename=original_name,
+            file_type=f"converted_{file_type}",
+            mime_type="application/zip",
+            file_data=archive_bytes,
+            file_size=len(archive_bytes),
+            processing_status="completed",
+        )
+        db.add(new_file)
+        db.flush()
+
+        for idx, (img_bytes, width, height) in enumerate(images, start=1):
+            file_image = FileImage(
+                file_id=new_file.id,
+                page_number=idx,
+                image_data=img_bytes,
+                width=width,
+                height=height,
+                file_size=len(img_bytes),
+            )
+            db.add(file_image)
+
+        db.commit()
+        file_id = new_file.id
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    image_blocks: List[Dict[str, Any]] = []
+    for img_bytes, _, _ in images:
+        encoded = base64.b64encode(img_bytes).decode("utf-8")
+        image_blocks.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/webp;base64,{encoded}",
+                    "detail": "high",
+                },
+            }
+        )
+
+    metadata = {
+        "original_file_name": original_name,
+        "converted_pages": list(range(1, len(images) + 1)),
+    }
+
+    if response_headers:
+        metadata["response_headers"] = response_headers
+
+    notes_value = tool_input.get("notes")
+
+    return {
+        "success": True,
+        "file_id": file_id,
+        "page_count": len(images),
+        "note": notes_value or f"Converted from {file_url}",
+        "truncated": False,
+        "image_blocks": image_blocks,
+        "metadata": metadata,
     }
 
 
@@ -808,25 +1197,11 @@ def build_plan(thinking_focus: str, tool_calls: List[Dict[str, Any]], user_messa
 
     plan.extend(focus_specific_steps.get(thinking_focus, ["Decide on the next best action and execute it."]))
 
+    plan.append(
+        "Before finalizing any response, verify each claim against collected search evidence and clearly label purely speculative parts."
+    )
+    plan.append(
+        "Populate search_evidence with confirmed facts drawn from recent tool outputs before delivering the final response."
+    )
+
     return plan
-
-
-def should_reply(tool_calls: List[Dict[str, Any]], plan: List[str]) -> bool:
-    """Determine whether the agent should reply to the user on the next turn."""
-    if not tool_calls:
-        return False
-
-    last_tool = tool_calls[-1]
-    if not last_tool["success"]:
-        return False
-
-    if not plan:
-        return True
-
-    plan_text = " ".join(plan).lower()
-    actionable_keywords = ["execute", "start", "call", "retry", "diagnose", "adjust", "identify", "collect", "break"]
-
-    if any(keyword in plan_text for keyword in actionable_keywords):
-        return False
-
-    return True

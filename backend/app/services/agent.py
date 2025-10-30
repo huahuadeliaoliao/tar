@@ -1,5 +1,6 @@
 """Core agent loop and persistence helpers."""
 
+import asyncio
 import base64
 import json
 import time
@@ -12,6 +13,8 @@ from app.models import File, FileImage, Message
 from app.services.llm import call_llm_with_tools
 from app.services.tools import execute_tool
 from app.utils.helpers import get_timestamp, sse_event
+
+ASSISTANT_ARTIFACT_TOOL_NAME = "__assistant_artifact__"
 
 
 class MultipleToolCallsError(Exception):
@@ -57,24 +60,49 @@ def load_complete_history(session_id: int, db: Session) -> List[Dict[str, Any]]:
                         ],
                     }
                 )
-            else:
+            elif msg.tool_name != ASSISTANT_ARTIFACT_TOOL_NAME:
                 assistant_content = msg.content or ""
-                parsed_content: Dict[str, Any] | None = None
+                assistant_parsed: Dict[str, Any] | List[Dict[str, Any]] | None = None
                 try:
                     parsed = json.loads(assistant_content)
                     if isinstance(parsed, dict) and parsed.get("type") == "assistant_final":
-                        parsed_content = parsed  # store for progress if needed later
+                        assistant_parsed = parsed  # store for progress if needed later
+                    elif isinstance(parsed, list):
+                        assistant_parsed = parsed
                 except (json.JSONDecodeError, TypeError):
-                    parsed_content = None
+                    assistant_parsed = None
 
-                if parsed_content:
-                    final_text = parsed_content.get("final", "")
+                if isinstance(assistant_parsed, dict):
+                    final_text = assistant_parsed.get("final", "")
                     history.append({"role": "assistant", "content": final_text})
+                elif isinstance(assistant_parsed, list):
+                    history.append({"role": "assistant", "content": assistant_parsed})
                 else:
                     history.append({"role": "assistant", "content": assistant_content})
+            else:
+                assistant_content = msg.content or ""
+                artifact_content: Optional[List[Dict[str, Any]]] = None
+                try:
+                    parsed = json.loads(assistant_content)
+                    if isinstance(parsed, list):
+                        artifact_content = parsed
+                except (json.JSONDecodeError, TypeError):
+                    artifact_content = None
+
+                if artifact_content:
+                    history.append({"role": "assistant", "content": artifact_content})
         elif msg.role == "tool":
-            # Tool responses map back via tool_call_id.
-            history.append({"role": "tool", "tool_call_id": msg.tool_call_id, "content": msg.tool_output})
+            tool_output_raw = msg.tool_output or ""
+            content_value: Any = tool_output_raw
+            try:
+                parsed_output = json.loads(tool_output_raw) if tool_output_raw else None
+            except json.JSONDecodeError:
+                parsed_output = None
+
+            if isinstance(parsed_output, dict):
+                content_value = build_tool_message_content(parsed_output)
+
+            history.append({"role": "tool", "tool_call_id": msg.tool_call_id, "content": content_value})
 
     return history
 
@@ -90,7 +118,7 @@ def build_message_content_with_files(user_message: str, file_ids: List[int], db:
     Returns:
         List[Dict[str, Any]]: Message content containing text and image blocks.
     """
-    content = [{"type": "text", "text": user_message}]
+    content: List[Dict[str, Any]] = [{"type": "text", "text": user_message}]
 
     for file_id in file_ids:
         # Retrieve file metadata.
@@ -113,6 +141,41 @@ def build_message_content_with_files(user_message: str, file_ids: List[int], db:
     return content
 
 
+def build_tool_file_message_content(file_id: int, header_text: str, db: Session) -> Optional[List[Dict[str, Any]]]:
+    """Generate assistant message content for tool-generated files.
+
+    Args:
+        file_id: Identifier of the converted or downloaded file.
+        header_text: Textual prefix describing the attachment.
+        db: Database session used to fetch file metadata.
+
+    Returns:
+        Optional[List[Dict[str, Any]]]: Structured content containing text and images,
+        or None when the file cannot be located or has no derived images.
+    """
+    file = db.query(File).filter(File.id == file_id).first()
+    if file is None:
+        return None
+
+    file_images = db.query(FileImage).filter(FileImage.file_id == file_id).order_by(FileImage.page_number).all()
+    if not file_images:
+        return None
+
+    content: List[Dict[str, Any]] = [{"type": "text", "text": header_text}]
+
+    for image in file_images:
+        content.append({"type": "text", "text": f"[File: {file.filename}, Page {image.page_number}]"})
+        image_base64 = base64.b64encode(image.image_data).decode("utf-8")
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/webp;base64,{image_base64}", "detail": "high"},
+            }
+        )
+
+    return content
+
+
 def save_user_message_to_db(session_id: int, content: List[Dict[str, Any]], sequence: int, db: Session) -> int:
     """Persist a user message and return its identifier.
 
@@ -127,6 +190,42 @@ def save_user_message_to_db(session_id: int, content: List[Dict[str, Any]], sequ
     """
     message = Message(
         session_id=session_id, role="user", content=json.dumps(content, ensure_ascii=False), sequence=sequence
+    )
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+    return message.id
+
+
+def save_assistant_structured_message_to_db(
+    session_id: int,
+    content: List[Dict[str, Any]],
+    sequence: int,
+    db: Session,
+    *,
+    tool_call_id: Optional[str] = None,
+    tool_name: Optional[str] = None,
+) -> int:
+    """Persist an assistant message that includes structured content such as images.
+
+    Args:
+        session_id: Identifier of the owning session.
+        content: Structured assistant content in OpenAI chat format.
+        sequence: Sequence number within the session.
+        db: Database session used for persistence.
+        tool_call_id: Optional identifier of the tool call that produced the content.
+        tool_name: Optional tool name classification used for downstream filtering.
+
+    Returns:
+        int: Primary key of the stored message.
+    """
+    message = Message(
+        session_id=session_id,
+        role="assistant",
+        content=json.dumps(content, ensure_ascii=False),
+        sequence=sequence,
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
     )
     db.add(message)
     db.commit()
@@ -224,6 +323,26 @@ def save_tool_call_to_db(
     return assistant_msg.id, tool_msg.id
 
 
+def build_tool_message_content(tool_payload: Any) -> Any:
+    """Convert a tool result into chat history content suitable for the LLM."""
+    if isinstance(tool_payload, dict):
+        image_blocks = tool_payload.get("image_blocks")
+        sanitized = {key: value for key, value in tool_payload.items() if key != "image_blocks"}
+        text_fragment = json.dumps(sanitized, ensure_ascii=False)
+        if isinstance(image_blocks, list) and image_blocks:
+            content_parts: List[Dict[str, Any]] = [{"type": "text", "text": text_fragment}]
+            for block in image_blocks:
+                if isinstance(block, dict):
+                    content_parts.append(block)
+            return content_parts
+        return text_fragment
+    if isinstance(tool_payload, str):
+        return tool_payload
+    if tool_payload is None:
+        return ""
+    return json.dumps(tool_payload, ensure_ascii=False)
+
+
 async def run_agent_loop(
     session_id: int, user_message: str, model_id: str, files: Optional[List[int]], db: Session
 ) -> AsyncGenerator[str, None]:
@@ -291,6 +410,7 @@ async def run_agent_loop(
         " of replying. If you believe the conversation is ready for a final response, call the reasoning tool again to"
         " review the evidence and set `ready_to_reply` to true; otherwise, keep executing the next step."
     )
+    self_check_reminder_inserted = False
 
     def flush_progress_buffer() -> None:
         nonlocal progress_buffer, progress_segments
@@ -309,6 +429,7 @@ async def run_agent_loop(
             "ddgs_search": {"query"},
             "ai_search_web": {"query"},
             "get_current_time": {"timezone"},
+            "playwright_browse": {"url"},
         }
 
         def infer_tool_name(payload: Dict[str, Any]) -> Optional[str]:
@@ -635,7 +756,10 @@ async def run_agent_loop(
 
             # Run the tool and capture success state.
             try:
-                tool_result = execute_tool(tool_name, tool_input, history, session_id)
+                if tool_name in {"playwright_browse", "download_and_convert_file"}:
+                    tool_result = await asyncio.to_thread(execute_tool, tool_name, tool_input, history, session_id)
+                else:
+                    tool_result = execute_tool(tool_name, tool_input, history, session_id)
                 if isinstance(tool_result, dict) and "success" in tool_result:
                     tool_success = bool(tool_result.get("success"))
                 else:
@@ -663,13 +787,48 @@ async def run_agent_loop(
             # Extend the in-memory history for the next iteration.
             history.append({"role": "assistant", "tool_calls": [tool_call]})
             history.append(
-                {"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(tool_result, ensure_ascii=False)}
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": build_tool_message_content(tool_result),
+                }
             )
+
+            assistant_artifact_content: Optional[List[Dict[str, Any]]] = None
+            if isinstance(tool_result, dict):
+                file_id_value = tool_result.get("file_id")
+                if isinstance(file_id_value, int):
+                    page_count = tool_result.get("page_count")
+                    note_text = str(tool_result.get("note") or "Downloaded file")
+                    metadata_parts = [f"file_id={file_id_value}"]
+                    if isinstance(page_count, int) and page_count > 0:
+                        metadata_parts.append(f"pages={page_count}")
+                    header_suffix = f" ({', '.join(metadata_parts)})" if metadata_parts else ""
+                    header = f"(tool) {note_text}{header_suffix}"
+                    assistant_artifact_content = build_tool_file_message_content(file_id_value, header, db)
+                    if assistant_artifact_content:
+                        save_assistant_structured_message_to_db(
+                            session_id,
+                            assistant_artifact_content,
+                            current_sequence,
+                            db,
+                            tool_call_id=tool_call_id,
+                            tool_name=ASSISTANT_ARTIFACT_TOOL_NAME,
+                        )
+                        current_sequence += 1
+
+            if assistant_artifact_content:
+                history.append({"role": "assistant", "content": assistant_artifact_content})
 
             if tool_name == "reasoning":
                 ready_flag = None
                 if isinstance(tool_result, dict):
                     ready_flag = tool_result.get("ready_to_reply")
+                    if ready_flag and not self_check_reminder_inserted:
+                        reminder = getattr(config, "SELF_CHECK_FINAL_RESPONSE_PROMPT", "")
+                        if reminder:
+                            history.append({"role": "system", "content": reminder})
+                            self_check_reminder_inserted = True
                 if ready_flag is False:
                     ready_to_reply_guard = True
                     last_stream_guard_state = None

@@ -282,3 +282,32 @@ class DoneEvent(SSEEvent):
     session_id: int
     total_iterations: int
     total_time_ms: int
+
+
+# ==================== Export ====================
+
+
+class ExportedMessage(BaseModel):
+    """Serialized message used in export responses."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    sequence: int
+    role: str
+    content: Optional[str]
+    tool_call_id: Optional[str] = None
+    tool_name: Optional[str] = None
+    tool_input: Optional[str] = None
+    tool_output: Optional[str] = None
+    model_id: Optional[str] = None
+    created_at: datetime
+
+
+class SessionExportResponse(BaseModel):
+    """Export payload combining session metadata and messages."""
+
+    session: SessionResponse
+    messages: List[ExportedMessage]
+    exported_at: datetime
+    message_count: int

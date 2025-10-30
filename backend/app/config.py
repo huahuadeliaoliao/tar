@@ -44,6 +44,7 @@ class Config:
         libreoffice = data.get("libreoffice", {})
         agent = data.get("agent", {})
         background_tasks = data.get("background_tasks", {})
+        playwright_settings = data.get("playwright", {})
 
         self.REGISTRATION_TOKEN: str = os.getenv("REGISTRATION_TOKEN", registration.get("token", ""))
 
@@ -93,6 +94,11 @@ class Config:
         self.SYSTEM_PROMPT: str = prompts.get("system", "")
         self.TOOL_ERROR_SYSTEM_PROMPT: str = prompts.get("tool_error", "")
         self.MULTIPLE_TOOLS_WARNING: str = prompts.get("multiple_tools_warning", "")
+        self.SELF_CHECK_FINAL_RESPONSE_PROMPT: str = (
+            prompts.get("self_check", {}).get("final_response", "")
+            if isinstance(prompts.get("self_check"), dict)
+            else ""
+        )
 
         self.MAX_FILE_SIZE: int = int(os.getenv("MAX_FILE_SIZE", file_uploads.get("max_file_size", 50 * 1024 * 1024)))
         self.ALLOWED_FILE_TYPES: Dict[str, List[str]] = {key: list(value) for key, value in allowed_file_types.items()}
@@ -109,6 +115,21 @@ class Config:
         self.MAX_RETRY_ON_MULTIPLE_TOOLS: int = int(agent.get("max_retry_on_multiple_tools", 3))
 
         self.BACKGROUND_TASK_MAX_WORKERS: int = int(background_tasks.get("max_workers", 8))
+
+        self.PLAYWRIGHT_DEFAULT_TIMEOUT_MS: int = int(playwright_settings.get("default_timeout_ms", 15000))
+        self.PLAYWRIGHT_NAVIGATION_TIMEOUT_MS: int = int(playwright_settings.get("navigation_timeout_ms", 20000))
+        wait_until_candidate = str(playwright_settings.get("default_wait_until", "load")).strip().lower() or "load"
+        if wait_until_candidate not in {"load", "domcontentloaded", "networkidle", "commit"}:
+            wait_until_candidate = "load"
+        self.PLAYWRIGHT_DEFAULT_WAIT_UNTIL = wait_until_candidate
+        self.PLAYWRIGHT_MAX_ACTIONS: int = int(playwright_settings.get("max_actions", 20))
+        self.PLAYWRIGHT_MAX_EXTRACTIONS: int = int(playwright_settings.get("max_extractions", 20))
+        self.PLAYWRIGHT_MAX_HTML_CHARS: int = int(playwright_settings.get("max_html_chars", 150000))
+        self.PLAYWRIGHT_MAX_MARKDOWN_CHARS: int = int(playwright_settings.get("max_markdown_chars", 20000))
+        self.PLAYWRIGHT_BROWSERS_PATH: str = playwright_settings.get("browsers_path", "/ms-playwright")
+        self.PLAYWRIGHT_MAX_DOWNLOAD_SIZE_BYTES: int = int(
+            playwright_settings.get("max_download_file_size_bytes", 30 * 1024 * 1024)
+        )
 
     @staticmethod
     def _none_to_empty(value: Any) -> str:

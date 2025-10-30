@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from pdf2image import convert_from_path
+from pdf2image import convert_from_bytes, convert_from_path
 from PIL import Image
 
 from app.config import config
@@ -155,6 +155,38 @@ def convert_docx_ppt_to_images(
             raise
         except Exception as e:
             raise FileProcessingError(f"Document conversion failed: {str(e)}") from e
+
+
+def convert_pdf_to_images(pdf_data: bytes) -> List[Tuple[bytes, int, int]]:
+    """Convert a PDF binary payload into WebP images.
+
+    Args:
+        pdf_data: Raw PDF bytes.
+
+    Returns:
+        List[Tuple[bytes, int, int]]: Sequence of WebP bytes with dimensions.
+
+    Raises:
+        FileProcessingError: When conversion fails.
+    """
+    try:
+        images = convert_from_bytes(pdf_data, dpi=config.PDF_TO_IMAGE_DPI, fmt="png")
+    except Exception as e:  # pragma: no cover - pdf2image behaviour is environment-specific
+        raise FileProcessingError(f"Failed to convert PDF to images: {str(e)}") from e
+
+    webp_images: List[Tuple[bytes, int, int]] = []
+    for img in images:
+        if img.width > config.IMAGE_MAX_DIMENSION or img.height > config.IMAGE_MAX_DIMENSION:
+            ratio = min(config.IMAGE_MAX_DIMENSION / img.width, config.IMAGE_MAX_DIMENSION / img.height)
+            new_size = (int(img.width * ratio), int(img.height * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+        buffer = io.BytesIO()
+        img = img.convert("RGB")
+        img.save(buffer, format="WEBP", quality=config.IMAGE_COMPRESSION_QUALITY)
+        webp_images.append((buffer.getvalue(), img.width, img.height))
+
+    return webp_images
 
 
 def get_file_type_from_mime(mime_type: str) -> str:

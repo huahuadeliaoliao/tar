@@ -111,6 +111,53 @@ def _filter_fields(result: Dict[str, Any], requested: Set[str] | None) -> Dict[s
     return {key: value for key, value in result.items() if key in allowed}
 
 
+def _persist_single_webp_image(
+    session_id: int,
+    filename: str,
+    webp_bytes: bytes,
+    width: int,
+    height: int,
+    *,
+    file_type: str = "screenshot",
+) -> int:
+    """Store a single WebP image for the given session and return its file id."""
+    db = SessionLocal()
+    try:
+        session_record = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+        if session_record is None:
+            raise ValueError(f"Session {session_id} not found")
+
+        user_id = session_record.user_id
+        new_file = File(
+            user_id=user_id,
+            filename=filename,
+            file_type=file_type,
+            mime_type="image/webp",
+            file_data=webp_bytes,
+            file_size=len(webp_bytes),
+            processing_status="completed",
+        )
+        db.add(new_file)
+        db.flush()
+
+        file_image = FileImage(
+            file_id=new_file.id,
+            page_number=1,
+            image_data=webp_bytes,
+            width=width,
+            height=height,
+            file_size=len(webp_bytes),
+        )
+        db.add(file_image)
+        db.commit()
+        return new_file.id
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def _format_results(
     raw_items: List[Dict[str, Any]],
     *,
@@ -508,7 +555,7 @@ def execute_tool(
     elif tool_name == "ai_search_web":
         return execute_ai_search_web(tool_input)
     elif tool_name == "playwright_browse":
-        return execute_playwright_browse(tool_input)
+        return execute_playwright_browse(tool_input, session_id)
     elif tool_name == "download_and_convert_file":
         return execute_download_and_convert_file(tool_input, session_id)
     elif tool_name == "reasoning":
@@ -922,7 +969,7 @@ def execute_reasoning(
     }
 
 
-def execute_playwright_browse(tool_input: Dict[str, Any]) -> Dict[str, Any]:
+def execute_playwright_browse(tool_input: Dict[str, Any], session_id: Optional[int]) -> Dict[str, Any]:
     """Inspect a web page using the shared Playwright manager."""
     if not isinstance(tool_input, dict):
         return {
@@ -931,7 +978,72 @@ def execute_playwright_browse(tool_input: Dict[str, Any]) -> Dict[str, Any]:
             "detail": "Tool input must be an object.",
             "logs": [],
         }
-    return playwright_manager.browse(tool_input)
+
+    result = playwright_manager.browse(tool_input)
+    if not isinstance(result, dict):
+        return result
+
+    screenshot_base64 = result.pop("screenshot_base64", None)
+    screenshot_note = tool_input.get("notes")
+
+    if screenshot_base64 and session_id not in (None, 0):
+        warnings: List[str] = []
+        try:
+            png_bytes = base64.b64decode(screenshot_base64)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.warning("Failed to decode Playwright screenshot", exc_info=exc)
+            warnings.append("screenshot_decode_failed")
+            png_bytes = None
+
+        file_id: Optional[int] = None
+        if png_bytes:
+            try:
+                webp_bytes, width, height = compress_image(png_bytes, config.IMAGE_MAX_DIMENSION)
+            except FileProcessingError as exc:
+                logger.warning("Failed to process Playwright screenshot", exc_info=exc)
+                warnings.append("screenshot_processing_failed")
+            else:
+                filename = tool_input.get("filename")
+                if not isinstance(filename, str) or not filename.strip():
+                    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+                    filename = f"playwright-screenshot-{timestamp}.webp"
+                else:
+                    filename = filename.strip()
+
+                try:
+                    file_id = _persist_single_webp_image(
+                        session_id,
+                        filename,
+                        webp_bytes,
+                        width,
+                        height,
+                        file_type="screenshot",
+                    )
+                except Exception as exc:  # pragma: no cover - persistence issues are environment-specific
+                    logger.warning("Failed to persist Playwright screenshot", exc_info=exc)
+                    warnings.append("screenshot_persistence_failed")
+                else:
+                    screenshot_meta = result.get("screenshot")
+                    if isinstance(screenshot_meta, dict):
+                        screenshot_meta.setdefault("width", width)
+                        screenshot_meta.setdefault("height", height)
+                        screenshot_meta["bytes"] = len(webp_bytes)
+                    result["file_id"] = file_id
+                    result["page_count"] = 1
+                    if not screenshot_note:
+                        final_url = result.get("final_url") or tool_input.get("url")
+                        screenshot_note = (
+                            f"Playwright screenshot for {final_url}" if final_url else "Playwright screenshot"
+                        )
+                    result["note"] = screenshot_note
+                    result["truncated"] = False
+
+        if warnings:
+            result.setdefault("warnings", warnings)
+    elif screenshot_base64:
+        result.setdefault("warnings", []).append("screenshot_not_persisted")
+
+    return result
 
 
 def execute_download_and_convert_file(tool_input: Dict[str, Any], session_id: Optional[int]) -> Dict[str, Any]:

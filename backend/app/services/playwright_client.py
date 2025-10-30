@@ -19,7 +19,6 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from app.config import config
-from app.services.file_handler import FileProcessingError, compress_image
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +246,9 @@ class PlaywrightManager:
                 self._run_actions(page, actions, logs)
                 extraction_results = self._run_extractions(page, extracts, logs)
                 extraction_results = self._post_process_extractions(extraction_results, logs, page.url)
-                screenshot_meta, image_blocks = self._capture_screenshot_if_requested(page, screenshot_option, logs)
+                screenshot_meta, screenshot_base64 = self._capture_screenshot_if_requested(
+                    page, screenshot_option, logs
+                )
 
                 try:
                     title = page.title()
@@ -264,8 +265,8 @@ class PlaywrightManager:
                 }
                 if screenshot_meta:
                     result["screenshot"] = screenshot_meta
-                if image_blocks:
-                    result["image_blocks"] = image_blocks
+                if screenshot_base64:
+                    result["screenshot_base64"] = screenshot_base64
                 return result
             except PlaywrightTimeoutError as exc:
                 logger.warning("Playwright operation timed out", exc_info=exc)
@@ -277,9 +278,6 @@ class PlaywrightManager:
                 logger.warning("Playwright raised an error", exc_info=exc)
                 self._restart_browser()
                 return self._error("playwright_error", str(exc), logs)
-            except FileProcessingError as exc:
-                logger.warning("Failed to compress screenshot", exc_info=exc)
-                return self._error("image_processing_failed", str(exc), logs)
             except ValueError as exc:
                 return self._error("invalid_parameters", str(exc), logs)
             except Exception as exc:  # pragma: no cover - defensive
@@ -522,10 +520,10 @@ class PlaywrightManager:
 
     def _capture_screenshot_if_requested(
         self, page: Any, screenshot_option: Any, logs: List[str]
-    ) -> tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Capture a screenshot when the caller opts in."""
         if not screenshot_option:
-            return None, []
+            return None, None
 
         full_page = False
         selector: Optional[str] = None
@@ -548,22 +546,16 @@ class PlaywrightManager:
             logs.append(f"Screenshot: capturing page (full_page={full_page})")
             png_bytes = page.screenshot(full_page=full_page)
 
-        webp_bytes, width, height = compress_image(png_bytes, config.IMAGE_MAX_DIMENSION)
-        encoded = base64.b64encode(webp_bytes).decode("utf-8")
-        image_block = {
-            "type": "image_url",
-            "image_url": {"url": f"data:image/webp;base64,{encoded}", "detail": "high"},
-        }
         metadata = {
-            "width": width,
-            "height": height,
-            "bytes": len(webp_bytes),
+            "bytes": len(png_bytes),
             "full_page": full_page,
         }
         if selector:
             metadata["selector"] = selector
 
-        return metadata, [image_block]
+        encoded_png = base64.b64encode(png_bytes).decode("utf-8")
+
+        return metadata, encoded_png
 
     def _require_selector(self, payload: Dict[str, Any], context: str) -> str:
         selector = payload.get("selector")

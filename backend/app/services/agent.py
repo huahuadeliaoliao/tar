@@ -176,6 +176,80 @@ def build_tool_file_message_content(file_id: int, header_text: str, db: Session)
     return content
 
 
+def build_tool_image_blocks_message_content(
+    header_text: str, image_blocks: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None
+) -> Optional[List[Dict[str, Any]]]:
+    """Generate assistant message content from inline image blocks returned by a tool.
+
+    Args:
+        header_text: Textual prefix describing the attachment.
+        image_blocks: List of image_url dictionaries produced by a tool.
+        metadata: Optional metadata describing the images (e.g., screenshot info).
+
+    Returns:
+        Optional[List[Dict[str, Any]]]: Structured content ready to append to chat history.
+    """
+    safe_blocks: List[Dict[str, Any]] = []
+    for block in image_blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "image_url":
+            continue
+        image_url = block.get("image_url")
+        if not isinstance(image_url, dict):
+            continue
+        url_value = image_url.get("url")
+        if not isinstance(url_value, str) or not url_value:
+            continue
+        detail = image_url.get("detail")
+        block_entry: Dict[str, Any] = {
+            "type": "image_url",
+            "image_url": {"url": url_value},
+        }
+        if isinstance(detail, str):
+            block_entry["image_url"]["detail"] = detail
+        safe_blocks.append(block_entry)
+
+    if not safe_blocks:
+        return None
+
+    header = header_text
+    if metadata and isinstance(metadata, dict):
+        meta_parts: List[str] = []
+        width = metadata.get("width")
+        height = metadata.get("height")
+        if isinstance(width, int) and isinstance(height, int):
+            meta_parts.append(f"{width}x{height}px")
+        bytes_size = metadata.get("bytes")
+        if isinstance(bytes_size, int) and bytes_size > 0:
+            meta_parts.append(f"{bytes_size} bytes")
+        if metadata.get("full_page"):
+            meta_parts.append("full page")
+        selector = metadata.get("selector")
+        if isinstance(selector, str) and selector:
+            meta_parts.append(f"selector={selector}")
+        if meta_parts:
+            header = f"{header_text} ({', '.join(meta_parts)})"
+
+    content: List[Dict[str, Any]] = [{"type": "text", "text": header}]
+    content.extend(safe_blocks)
+    return content
+
+
+def sanitize_tool_result_for_storage(tool_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a shallow copy of the tool result without large inline payloads."""
+    sanitized = {key: value for key, value in tool_result.items() if key != "image_blocks"}
+    sanitized.pop("screenshot_base64", None)
+
+    screenshot = sanitized.get("screenshot")
+    if isinstance(screenshot, dict) and "image_blocks" in screenshot:
+        screenshot = dict(screenshot)
+        screenshot.pop("image_blocks", None)
+        sanitized["screenshot"] = screenshot
+
+    return sanitized
+
+
 def save_user_message_to_db(session_id: int, content: List[Dict[str, Any]], sequence: int, db: Session) -> int:
     """Persist a user message and return its identifier.
 
@@ -326,15 +400,8 @@ def save_tool_call_to_db(
 def build_tool_message_content(tool_payload: Any) -> Any:
     """Convert a tool result into chat history content suitable for the LLM."""
     if isinstance(tool_payload, dict):
-        image_blocks = tool_payload.get("image_blocks")
         sanitized = {key: value for key, value in tool_payload.items() if key != "image_blocks"}
         text_fragment = json.dumps(sanitized, ensure_ascii=False)
-        if isinstance(image_blocks, list) and image_blocks:
-            content_parts: List[Dict[str, Any]] = [{"type": "text", "text": text_fragment}]
-            for block in image_blocks:
-                if isinstance(block, dict):
-                    content_parts.append(block)
-            return content_parts
         return text_fragment
     if isinstance(tool_payload, str):
         return tool_payload
@@ -768,20 +835,29 @@ async def run_agent_loop(
                 tool_result = {"success": False, "error": str(e)}
                 tool_success = False
 
+            raw_tool_result = tool_result
+            stored_tool_result = (
+                sanitize_tool_result_for_storage(raw_tool_result)
+                if isinstance(raw_tool_result, dict)
+                else raw_tool_result
+            )
+
             # Emit the tool_result event.
             yield sse_event(
                 {
                     "type": "tool_result",
                     "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
-                    "tool_output": tool_result,
+                    "tool_output": stored_tool_result,
                     "success": tool_success,
                     "timestamp": get_timestamp(),
                 }
             )
 
             # Persist tool activity.
-            save_tool_call_to_db(session_id, tool_call_id, tool_name, tool_input, tool_result, current_sequence, db)
+            save_tool_call_to_db(
+                session_id, tool_call_id, tool_name, tool_input, stored_tool_result, current_sequence, db
+            )
             current_sequence += 2  # assistant + tool
 
             # Extend the in-memory history for the next iteration.
@@ -790,40 +866,54 @@ async def run_agent_loop(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call_id,
-                    "content": build_tool_message_content(tool_result),
+                    "content": build_tool_message_content(stored_tool_result),
                 }
             )
 
             assistant_artifact_content: Optional[List[Dict[str, Any]]] = None
-            if isinstance(tool_result, dict):
-                file_id_value = tool_result.get("file_id")
+            if isinstance(raw_tool_result, dict):
+                file_id_value = raw_tool_result.get("file_id")
                 if isinstance(file_id_value, int):
-                    page_count = tool_result.get("page_count")
-                    note_text = str(tool_result.get("note") or "Downloaded file")
+                    page_count = raw_tool_result.get("page_count")
+                    note_text = str(raw_tool_result.get("note") or "Downloaded file")
                     metadata_parts = [f"file_id={file_id_value}"]
                     if isinstance(page_count, int) and page_count > 0:
                         metadata_parts.append(f"pages={page_count}")
                     header_suffix = f" ({', '.join(metadata_parts)})" if metadata_parts else ""
                     header = f"(tool) {note_text}{header_suffix}"
                     assistant_artifact_content = build_tool_file_message_content(file_id_value, header, db)
-                    if assistant_artifact_content:
-                        save_assistant_structured_message_to_db(
-                            session_id,
-                            assistant_artifact_content,
-                            current_sequence,
-                            db,
-                            tool_call_id=tool_call_id,
-                            tool_name=ASSISTANT_ARTIFACT_TOOL_NAME,
+                else:
+                    image_blocks_raw = raw_tool_result.get("image_blocks")
+                    if isinstance(image_blocks_raw, list):
+                        screenshot_meta = raw_tool_result.get("screenshot")
+                        header_base = str(raw_tool_result.get("note") or "").strip()
+                        if not header_base:
+                            header_base = "Captured image"
+                            if tool_name:
+                                header_base = f"{tool_name} {header_base}"
+                        header = f"(tool) {header_base}"
+                        metadata_dict = screenshot_meta if isinstance(screenshot_meta, dict) else None
+                        assistant_artifact_content = build_tool_image_blocks_message_content(
+                            header, image_blocks_raw, metadata_dict
                         )
-                        current_sequence += 1
+                if assistant_artifact_content:
+                    save_assistant_structured_message_to_db(
+                        session_id,
+                        assistant_artifact_content,
+                        current_sequence,
+                        db,
+                        tool_call_id=tool_call_id,
+                        tool_name=ASSISTANT_ARTIFACT_TOOL_NAME,
+                    )
+                    current_sequence += 1
 
             if assistant_artifact_content:
                 history.append({"role": "assistant", "content": assistant_artifact_content})
 
             if tool_name == "reasoning":
                 ready_flag = None
-                if isinstance(tool_result, dict):
-                    ready_flag = tool_result.get("ready_to_reply")
+                if isinstance(stored_tool_result, dict):
+                    ready_flag = stored_tool_result.get("ready_to_reply")
                     if ready_flag and not self_check_reminder_inserted:
                         reminder = getattr(config, "SELF_CHECK_FINAL_RESPONSE_PROMPT", "")
                         if reminder:

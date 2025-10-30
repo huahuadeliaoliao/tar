@@ -20,10 +20,10 @@ const buttonClasses = computed(() => {
 
   const variants = {
     default:
-      'bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-md hover:shadow-lg hover:from-blue-600 hover:to-blue-700',
+      'bg-gradient-to-br from-zinc-200 to-zinc-300 text-zinc-900 shadow-sm hover:shadow-md hover:from-zinc-100 hover:to-zinc-200 dark:from-zinc-100 dark:to-zinc-200 dark:text-zinc-900 dark:hover:from-white dark:hover:to-zinc-100',
     outline:
-      'border border-zinc-300 bg-white/80 backdrop-blur-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/80 dark:hover:bg-zinc-800',
-    ghost: 'hover:bg-zinc-100/80 dark:hover:bg-zinc-800/80',
+      'border border-zinc-300 bg-white/80 text-zinc-700 backdrop-blur-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-100 dark:hover:bg-zinc-800/70',
+    ghost: 'text-zinc-600 hover:bg-zinc-100/80 dark:text-zinc-200 dark:hover:bg-zinc-800/70',
     destructive: 'bg-red-500 text-white shadow-md hover:bg-red-600 hover:shadow-lg',
   }
 

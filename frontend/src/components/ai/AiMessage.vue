@@ -51,7 +51,7 @@ const contentClasses = computed(() => {
       base,
       'px-4 py-3.5',
       isUser.value
-        ? 'max-w-[70%] bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-md'
+        ? 'max-w-[70%] bg-zinc-200/90 text-zinc-900 shadow-sm dark:bg-zinc-200/90 dark:text-zinc-900'
         : 'max-w-full bg-zinc-100/80 text-zinc-900 backdrop-blur-sm dark:bg-zinc-800/50 dark:text-zinc-100',
     )
   } else {
@@ -59,7 +59,7 @@ const contentClasses = computed(() => {
       base,
       'px-4 py-3.5',
       isUser.value
-        ? 'max-w-[70%] bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-md'
+        ? 'max-w-[70%] bg-zinc-200/90 text-zinc-900 shadow-sm dark:bg-zinc-200/90 dark:text-zinc-900'
         : 'max-w-full bg-white/80 text-zinc-900 shadow-sm backdrop-blur-sm dark:bg-zinc-900/50 dark:text-zinc-100',
     )
   }
@@ -67,7 +67,7 @@ const contentClasses = computed(() => {
 
 const aiAvatarClasses =
   'bg-white text-black ring-1 ring-zinc-200 dark:bg-zinc-100 dark:text-zinc-900'
-const userAvatarClasses = 'from-blue-500 to-blue-600 text-white'
+const userAvatarClasses = 'bg-zinc-200 text-zinc-900 ring-1 ring-zinc-400'
 </script>
 
 <template>
@@ -96,3 +96,20 @@ const userAvatarClasses = 'from-blue-500 to-blue-600 text-white'
     />
   </div>
 </template>
+
+<style scoped>
+:deep(.is-user .prose a) {
+  color: #111827;
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+:deep(.is-user .prose a:hover) {
+  color: #0f172a;
+}
+
+:deep(.is-user .prose a:focus-visible) {
+  outline: 2px solid rgba(15, 23, 42, 0.4);
+  outline-offset: 2px;
+}
+</style>

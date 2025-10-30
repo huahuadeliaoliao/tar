@@ -152,7 +152,7 @@ function formatDate(dateString: string): string {
           :class="[
             'group relative w-full rounded-xl px-3 py-2.5 text-left transition-all',
             sessionsStore.currentSessionId === session.id
-              ? 'bg-blue-50 ring-2 ring-blue-500/20 dark:bg-blue-950/30'
+              ? 'bg-zinc-200/80 ring-2 ring-zinc-400/30 dark:bg-zinc-800/70'
               : 'hover:bg-zinc-100/80 dark:hover:bg-zinc-800/50',
           ]"
           @click="selectSession(session.id)"
@@ -163,7 +163,7 @@ function formatDate(dateString: string): string {
                 :class="[
                   'truncate text-sm font-medium',
                   sessionsStore.currentSessionId === session.id
-                    ? 'text-blue-700 dark:text-blue-300'
+                    ? 'text-zinc-900 dark:text-zinc-50'
                     : 'text-zinc-900 dark:text-zinc-100',
                 ]"
               >
@@ -175,7 +175,7 @@ function formatDate(dateString: string): string {
                     cn(
                       'text-xs',
                       sessionsStore.currentSessionId === session.id
-                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
+                        ? 'bg-zinc-900 text-white dark:bg-zinc-200 dark:text-zinc-900'
                         : 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400',
                     )
                   "

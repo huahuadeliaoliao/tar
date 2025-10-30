@@ -25,11 +25,11 @@ const emit = defineEmits<{
 
 const inputClasses = computed(() => {
   const base =
-    'w-full rounded-xl border bg-white px-4 py-3 text-sm shadow-sm outline-none transition-all placeholder:text-zinc-400 focus:shadow-md focus:ring-4 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-900'
+    'w-full rounded-xl border bg-white px-4 py-3 text-sm shadow-sm outline-none transition-all text-zinc-900 placeholder:text-zinc-400 focus:shadow-md focus:ring-4 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500'
 
   const variants = props.error
     ? 'border-red-300 focus:border-red-500 focus:ring-red-500/10 dark:border-red-700 dark:focus:border-red-400'
-    : 'border-zinc-300 focus:border-blue-500 focus:ring-blue-500/10 dark:border-zinc-700 dark:focus:border-blue-400'
+    : 'border-zinc-300 focus:border-zinc-500 focus:ring-[rgba(113,113,122,0.35)] dark:border-zinc-700 dark:focus:border-zinc-400'
 
   return cn(base, variants, props.class)
 })

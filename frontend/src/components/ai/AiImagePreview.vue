@@ -117,7 +117,7 @@ function handleImageError() {
             :href="props.src"
             target="_blank"
             rel="noopener noreferrer"
-            class="text-blue-600 hover:underline dark:text-blue-400"
+            class="text-zinc-700 hover:text-zinc-900 hover:underline dark:text-zinc-100 dark:hover:text-white"
           >
             在新标签页打开
           </a>

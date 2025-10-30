@@ -54,7 +54,7 @@ const formattedTime = computed(() => {
 
 const iconClasses = computed(() => {
   if (props.state.status === 'in_progress') {
-    return 'animate-spin text-blue-500'
+    return 'animate-spin text-zinc-500'
   } else if (props.state.status === 'completed') {
     return 'text-green-500'
   } else {

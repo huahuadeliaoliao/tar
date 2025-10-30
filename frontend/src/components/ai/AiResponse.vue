@@ -307,12 +307,21 @@ onUnmounted(() => {
 }
 
 .prose :where(a):not(:where([class~='not-prose'] *)) {
-  color: rgb(59, 130, 246);
+  color: #1f2937;
   text-decoration: underline;
+  font-weight: 500;
+}
+
+.prose :where(a):not(:where([class~='not-prose'] *)):hover {
+  color: #111827;
 }
 
 .dark .prose :where(a):not(:where([class~='not-prose'] *)) {
-  color: rgb(96, 165, 250);
+  color: #e5e7eb;
+}
+
+.dark .prose :where(a):not(:where([class~='not-prose'] *)):hover {
+  color: #f5f5f5;
 }
 
 /* Increase spacing for lists. */

@@ -120,7 +120,7 @@ function handleKeydown(event: KeyboardEvent) {
   >
     <div class="mb-8 flex flex-col items-center gap-4">
       <div
-        class="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-blue-600 shadow-lg"
+        class="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-zinc-200 to-zinc-400 shadow-lg"
       >
         <AiIcon :size="32" class="text-white" />
       </div>
@@ -222,7 +222,7 @@ function handleKeydown(event: KeyboardEvent) {
       <div class="mt-6 text-center">
         <button
           type="button"
-          class="text-sm text-blue-600 hover:text-blue-700 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+          class="text-sm text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-300 dark:hover:text-white"
           :disabled="loading"
           @click="switchMode"
         >

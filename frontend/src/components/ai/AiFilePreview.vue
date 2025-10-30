@@ -22,22 +22,22 @@ const fileConfig = computed(() => {
   const configs = {
     image: {
       icon: FileImage,
-      color: 'text-blue-600 bg-blue-50 dark:bg-blue-950/30',
+      color: 'text-zinc-700 bg-zinc-100 dark:bg-zinc-800/60',
       label: '图片',
     },
     pdf: {
       icon: FileText,
-      color: 'text-red-600 bg-red-50 dark:bg-red-950/30',
+      color: 'text-zinc-700 bg-zinc-100 dark:bg-zinc-800/60',
       label: 'PDF',
     },
     docx: {
       icon: FileText,
-      color: 'text-blue-600 bg-blue-50 dark:bg-blue-950/30',
+      color: 'text-zinc-700 bg-zinc-100 dark:bg-zinc-800/60',
       label: 'Word',
     },
     pptx: {
       icon: Presentation,
-      color: 'text-orange-600 bg-orange-50 dark:bg-orange-950/30',
+      color: 'text-zinc-700 bg-zinc-100 dark:bg-zinc-800/60',
       label: 'PPT',
     },
   }

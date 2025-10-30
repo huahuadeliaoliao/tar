@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { cn } from '@/utils/cn'
-import { Send, Paperclip } from 'lucide-vue-next'
+import { ArrowUp, Paperclip } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import AiFilePreview from './AiFilePreview.vue'
 import type { FileAttachment } from '@/types/chat'
@@ -206,7 +206,7 @@ function removeFile(index: number) {
             autocomplete="off"
             :placeholder="placeholder"
             :disabled="disabled"
-            class="w-full resize-none rounded-2xl border border-zinc-300 bg-white px-4 py-3 text-sm shadow-sm outline-none transition-all placeholder:text-zinc-400 focus:border-blue-500 focus:shadow-md focus:ring-4 focus:ring-blue-500/10 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:focus:border-blue-400 sm:px-5 sm:py-3.5"
+            class="w-full resize-none rounded-2xl border border-zinc-300 bg-white px-4 py-3 text-sm shadow-sm outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-500 focus:shadow-md focus:ring-4 focus:ring-[rgba(113,113,122,0.35)] disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-400 sm:px-5 sm:py-3.5"
             rows="1"
             @input="adjustHeight"
             @keydown="handleKeydown"
@@ -218,7 +218,7 @@ function removeFile(index: number) {
           class="shrink-0 rounded-xl"
           @click="handleSubmit"
         >
-          <Send :size="16" />
+          <ArrowUp :size="16" />
         </Button>
       </div>
       <input

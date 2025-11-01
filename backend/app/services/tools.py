@@ -480,57 +480,67 @@ AVAILABLE_TOOLS = [
         "type": "function",
         "function": {
             "name": "reasoning",
-            "description": """Deep thinking tool. Invoking this pauses execution, reviews the full conversation, completed work, and current status, then provides a structured summary to plan next steps. Treat it as your default first choice whenever the task feels complex, uncertain, or requires planning.
+            "description": """Reflect on the complete conversation and tool history without trimming. Use this whenever the
+task feels complex, stalled, or uncertain. Before responding, pause execution and produce a concise JSON recap.
 
 Best used when:
-- The task is complex and needs planning before execution
-- You are unsure about the next step
-- You need to review completed vs. remaining work
-- Execution is stuck and you must rethink strategy
-- You must break down a multi-step task
+- You need to review the current goal, progress, and remaining gaps
+- A previous step/tool failed or produced unexpected output
+- New evidence (e.g., search/browse results) must be consolidated
+- You are deciding whether it is safe to deliver the final answer
 
-You can call it multiple times for iterative planning. After reviewing the plan, be sure to summarize any confirmed facts gathered via search/browse tools, list outstanding evidence needed, and note any parts that would be speculative without verification.""",
+Always cover:
+- Summary: current objective, what has been done, what still blocks you
+- Evidence: confirmed facts or data points from searches/tools (include source + confidence when possible)
+- Issues: recent failures, risks, or uncertainties that require attention
+- Next actions: concrete, ordered steps you will take next
+- Ready flag: set `ready_to_reply` to true only when you can answer the user without caveats
+
+Respond with structured JSON only; the system will not alter or add to your fields.""",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "thinking_focus": {
+                    "summary": {
                         "type": "string",
-                        "enum": [
-                            "task_planning",
-                            "progress_review",
-                            "problem_analysis",
-                            "task_decomposition",
-                            "strategy_adjustment",
-                        ],
-                        "description": "Thinking focus: task_planning=plan steps, progress_review=review progress, problem_analysis=analyze problems, task_decomposition=break down tasks, strategy_adjustment=adjust strategy",
+                        "description": "Concise recap of the current understanding, progress, and remaining concerns.",
                     },
-                    "specific_question": {
-                        "type": "string",
-                        "description": 'Specific question to consider, e.g., "How should we implement auth next?", "Why did the previous step fail?", "How do we break down this task?"',
-                    },
-                    "search_evidence": {
+                    "next_actions": {
                         "type": "array",
-                        "description": (
-                            "Optional list of confirmed facts gathered from recent search/browse tools. "
-                            "Include objects with keys like 'fact', 'source', and 'confidence'."
-                        ),
+                        "items": {"type": "string"},
+                        "description": "Concrete next steps you plan to take. Each entry should be a single actionable item.",
+                    },
+                    "ready_to_reply": {
+                        "type": "boolean",
+                        "description": "Set to true only if you are prepared to deliver the final answer to the user.",
+                    },
+                    "evidence": {
+                        "type": "array",
+                        "description": "Confirmed facts from search/tool calls with optional source and confidence metadata.",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "fact": {"type": "string"},
                                 "source": {"type": "string"},
-                                "confidence": {"type": ["string", "number"]},
+                                "confidence": {"type": "string"},
                             },
+                            "required": ["fact"],
                         },
                     },
-                    "ready_to_reply": {
-                        "type": "boolean",
-                        "description": (
-                            "Set to true only when the plan is complete and the assistant is ready to deliver the final answer."
-                        ),
+                    "issues": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Recent tool failures, risks, or uncertainties that still need attention.",
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "description": "Optional confidence level or risk assessment for your current plan.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional additional remarks, dependencies, or reminders.",
                     },
                 },
-                "required": ["thinking_focus", "specific_question"],
+                "required": ["summary", "next_actions", "ready_to_reply"],
             },
         },
     },
@@ -875,104 +885,97 @@ Requirements:
 def execute_reasoning(
     tool_input: Dict[str, Any], messages_history: List[Dict[str, Any]], session_id: int
 ) -> Dict[str, Any]:
-    """Summarize the conversation and produce an execution plan without another model call.
+    """Validate and echo the reasoning content provided by the primary model."""
+    if not isinstance(tool_input, dict):
+        return {
+            "success": False,
+            "error": "invalid_arguments",
+            "detail": "Reasoning tool input must be an object.",
+        }
 
-    Args:
-        tool_input: Parameters describing the reasoning focus.
-        messages_history: Full conversation history.
-        session_id: Identifier of the session being analyzed.
+    summary_raw = tool_input.get("summary")
+    summary = str(summary_raw).strip() if summary_raw is not None else ""
+    if not summary:
+        return {
+            "success": False,
+            "error": "missing_summary",
+            "detail": "Provide a non-empty 'summary' describing the current state.",
+        }
 
-    Returns:
-        Dict[str, Any]: Simplified reasoning output containing summary, plan, and readiness flag.
-    """
-    thinking_focus = tool_input.get("thinking_focus", "task_planning")
-    specific_question = tool_input.get("specific_question", "")
-
-    # Collect user messages for context.
-    user_messages = [m for m in messages_history if m.get("role") == "user"]
-    initial_goal = extract_text_content(user_messages[0].get("content", "")) if user_messages else ""
-
-    # Track tool call history and collect evidence from search/browse tools.
-    tool_calls = []
-    search_evidence: List[Dict[str, Any]] = []
-    for msg in messages_history:
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            for tc in msg["tool_calls"]:
-                tool_call_id = tc["id"]
-                tool_name = tc["function"]["name"]
-                tool_input_str = tc["function"]["arguments"]
-
-                tool_result = next(
-                    (m for m in messages_history if m.get("role") == "tool" and m.get("tool_call_id") == tool_call_id),
-                    None,
-                )
-
-                result_content = ""
-                success = True
-                if tool_result:
-                    result_content = tool_result.get("content", "")
-                    if isinstance(result_content, str):
-                        lowered = result_content.lower()
-                        success = not ("error" in lowered and "success" not in lowered)
-
-                tool_calls.append(
-                    {"name": tool_name, "input": tool_input_str, "output": result_content, "success": success}
-                )
-
-    # Build a concise textual summary with recent context and tool outcomes.
-    summary_lines = []
-    if initial_goal:
-        summary_lines.append(f"User goal: {initial_goal}")
-    if specific_question:
-        summary_lines.append(f"Focus question: {specific_question}")
-
-    if tool_calls:
-        summary_lines.append(
-            "Recent tool activity:\n"
-            + "\n".join(format_tool_call_line(idx, tc) for idx, tc in enumerate(tool_calls, 1))
-        )
+    next_actions_raw = tool_input.get("next_actions")
+    if isinstance(next_actions_raw, list):
+        next_actions = [str(item).strip() for item in next_actions_raw if str(item).strip()]
     else:
-        summary_lines.append("No tools have been used yet.")
+        next_actions = []
+        if next_actions_raw is not None:
+            candidate = str(next_actions_raw).strip()
+            if candidate:
+                next_actions.append(candidate)
 
-    provided_evidence = tool_input.get("search_evidence")
-    if isinstance(provided_evidence, list):
-        sanitized_evidence: List[Dict[str, str]] = []
-        for item in provided_evidence:
-            if isinstance(item, dict):
-                fact = str(item.get("fact", "")).strip()
-                source = str(item.get("source", "")).strip()
-                confidence_raw = item.get("confidence")
-                confidence = str(confidence_raw).strip() if confidence_raw is not None else ""
-                if fact:
-                    evidence_entry = {"fact": fact}
-                    if source:
-                        evidence_entry["source"] = source
-                    if confidence:
-                        evidence_entry["confidence"] = confidence
-                    sanitized_evidence.append(evidence_entry)
-            elif isinstance(item, str):
-                fact = item.strip()
-                if fact:
-                    sanitized_evidence.append({"fact": fact})
-        if sanitized_evidence:
-            search_evidence = sanitized_evidence
+    if not next_actions:
+        return {
+            "success": False,
+            "error": "missing_next_actions",
+            "detail": "Include at least one action in 'next_actions', even if it is to proceed with the final reply.",
+        }
 
-    # Construct a high-level plan.
-    plan = build_plan(thinking_focus, tool_calls, user_messages)
+    ready_value = tool_input.get("ready_to_reply")
+    if isinstance(ready_value, bool):
+        ready_to_reply = ready_value
+    elif isinstance(ready_value, str):
+        ready_to_reply = ready_value.strip().lower() in {"true", "1", "yes"}
+    else:
+        ready_to_reply = bool(ready_value)
 
-    return {
+    confidence_raw = tool_input.get("confidence")
+    confidence = str(confidence_raw).strip() if confidence_raw is not None else None
+
+    evidence_raw = tool_input.get("evidence")
+    evidence: List[Dict[str, Any]] = []
+    if isinstance(evidence_raw, list):
+        for entry in evidence_raw:
+            if isinstance(entry, dict):
+                fact_raw = entry.get("fact")
+                fact = str(fact_raw).strip() if fact_raw is not None else ""
+                if not fact:
+                    continue
+                structured: Dict[str, Any] = {"fact": fact}
+                source_raw = entry.get("source")
+                confidence_raw = entry.get("confidence")
+                if source_raw is not None:
+                    structured["source"] = str(source_raw).strip()
+                if confidence_raw is not None:
+                    structured["confidence"] = str(confidence_raw).strip()
+                evidence.append(structured)
+
+    issues_raw = tool_input.get("issues")
+    issues: List[str] = []
+    if isinstance(issues_raw, list):
+        issues = [str(item).strip() for item in issues_raw if str(item).strip()]
+
+    notes_raw = tool_input.get("notes")
+    notes = str(notes_raw).strip() if notes_raw is not None else None
+
+    notes_raw = tool_input.get("notes")
+    notes = str(notes_raw).strip() if notes_raw is not None else None
+
+    payload: Dict[str, Any] = {
         "success": True,
-        "summary": "\n".join(summary_lines),
-        "plan": plan,
-        "ready_to_reply": bool(tool_input.get("ready_to_reply", False)),
-        "search_evidence": search_evidence or [],
-        "stats": {
-            "total_tool_calls": len(tool_calls),
-            "successful_calls": len([tc for tc in tool_calls if tc["success"]]),
-            "failed_calls": len([tc for tc in tool_calls if not tc["success"]]),
-            "user_interactions": len(user_messages),
-        },
+        "summary": summary,
+        "next_actions": next_actions,
+        "ready_to_reply": ready_to_reply,
     }
+
+    if confidence:
+        payload["confidence"] = confidence
+    if evidence:
+        payload["evidence"] = evidence
+    if issues:
+        payload["issues"] = issues
+    if notes:
+        payload["notes"] = notes
+
+    return payload
 
 
 def execute_playwright_browse(tool_input: Dict[str, Any], session_id: Optional[int]) -> Dict[str, Any]:
@@ -1241,26 +1244,6 @@ def execute_download_and_convert_file(tool_input: Dict[str, Any], session_id: Op
     }
 
 
-def extract_text_content(content: Any) -> str:
-    """Extract plain text from a mixed content payload.
-
-    Args:
-        content: Chat content which may be a string or list of parts.
-
-    Returns:
-        str: Concatenated text content.
-    """
-    if isinstance(content, str):
-        return content
-    elif isinstance(content, list):
-        texts = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                texts.append(item.get("text", ""))
-        return "\n".join(texts)
-    return ""
-
-
 def get_available_tools() -> List[Dict[str, Any]]:
     """Return the tool definitions.
 
@@ -1268,58 +1251,3 @@ def get_available_tools() -> List[Dict[str, Any]]:
         List[Dict[str, Any]]: JSON-schema-compatible tool definitions.
     """
     return AVAILABLE_TOOLS
-
-
-def format_tool_call_line(index: int, tool_call: Dict[str, Any]) -> str:
-    """Render a single-line summary for a tool call."""
-    status = "succeeded" if tool_call["success"] else "failed"
-    return f"{index}. {tool_call['name']} ({status})"
-
-
-def build_plan(thinking_focus: str, tool_calls: List[Dict[str, Any]], user_messages: List[Dict[str, Any]]) -> List[str]:
-    """Construct a short execution plan based on focus and progress."""
-    if not tool_calls and not user_messages:
-        return ["Clarify the user goal.", "Identify the first action to take."]
-
-    last_tool = tool_calls[-1] if tool_calls else None
-    plan: List[str] = []
-
-    if last_tool and not last_tool["success"]:
-        plan.append("Diagnose why the last tool failed and adjust inputs or choose an alternative.")
-
-    if last_tool and last_tool["success"]:
-        plan.append("Incorporate the latest tool results and assess remaining information gaps.")
-
-    focus_specific_steps = {
-        "task_planning": [
-            "Break the main objective into manageable steps.",
-            "Execute the first pending step and reassess.",
-        ],
-        "progress_review": [
-            "Summarize progress for the user.",
-            "Highlight the most important next action based on remaining gaps.",
-        ],
-        "problem_analysis": [
-            "Outline the root cause using gathered evidence.",
-            "Select and execute the best solution path.",
-        ],
-        "task_decomposition": [
-            "List key subtasks in order.",
-            "Start executing the highest-priority subtask.",
-        ],
-        "strategy_adjustment": [
-            "Assess current strategy effectiveness.",
-            "Adjust the plan and implement the first change.",
-        ],
-    }
-
-    plan.extend(focus_specific_steps.get(thinking_focus, ["Decide on the next best action and execute it."]))
-
-    plan.append(
-        "Before finalizing any response, verify each claim against collected search evidence and clearly label purely speculative parts."
-    )
-    plan.append(
-        "Populate search_evidence with confirmed facts drawn from recent tool outputs before delivering the final response."
-    )
-
-    return plan

@@ -54,6 +54,8 @@ def load_complete_history(session_id: int, db: Session) -> List[Dict[str, Any]]:
             if msg.tool_call_id:
                 # Assistant tool calls include serialized arguments.
                 tool_input = json.loads(msg.tool_input) if msg.tool_input else {}
+                if msg.tool_name == "reasoning":
+                    tool_input = {}
                 history_entry = {
                     "role": "assistant",
                     "tool_calls": [
@@ -518,7 +520,7 @@ async def run_agent_loop(
             return []
 
         argument_hints: Dict[str, set[str]] = {
-            "reasoning": {"thinking_focus", "specific_question"},
+            "reasoning": {"summary", "next_actions"},
             "ddgs_search": {"query"},
             "ai_search_web": {"query"},
             "get_current_time": {"timezone"},

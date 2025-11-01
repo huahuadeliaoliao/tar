@@ -16,6 +16,12 @@ docker compose --profile dev up --build -d
 
 # Production-style run
 docker compose --profile prod up --build -d
+
+# Use prebuilt images from Aliyun Container Registry
+docker compose --profile prebuilt-acr up -d
+
+# Use prebuilt images from Docker Hub
+docker compose --profile prebuilt-dh up -d
 ```
 
 Stop containers with `docker compose --profile <dev|prod> down`. Add `-v` to remove sqlite data.

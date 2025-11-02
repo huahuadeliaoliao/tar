@@ -496,6 +496,8 @@ Always cover:
 - Next actions: concrete, ordered steps you will take next
 - Ready flag: set `ready_to_reply` to true only when you can answer the user without caveats
 
+Even if you are ready to reply immediately, include a placeholder in `next_actions` (e.g., "Deliver final reply to the user").
+
 Respond with structured JSON only; the system will not alter or add to your fields.""",
             "parameters": {
                 "type": "object",

@@ -21,7 +21,7 @@
     "@tailwindcss/vite": "^4.1.16",
     "jwt-decode": "^4.0.0",
     "lucide-vue-next": "^0.546.0",
-    "marked": "^16.4.1",
+    "markdown-exit": "^1.0.0-beta.4",
     "pdfjs-dist": "^5.4.296",
     "pinia": "^3.0.3",
     "shiki": "^3.13.0",

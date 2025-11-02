@@ -15,8 +15,8 @@ base_url = "https://api.openai.com/v1"
 api_key = "sk-your-api-key"
 
 [[openai.available_models]]
-id = "gpt-5-chat-latest"
-name = "GPT-5"
+id = "o3"
+name = "o3"
 supports_vision = true
 
 [[openai.available_models]]

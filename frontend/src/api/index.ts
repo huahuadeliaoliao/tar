@@ -65,6 +65,63 @@ export const sessionsApi = {
   async delete(sessionId: number): Promise<{ message: string }> {
     return apiClient.delete(`/sessions/${sessionId}`)
   },
+
+  async export(
+    sessionId: number,
+    options: {
+      format?: 'json' | 'ndjson' | 'markdown'
+      includeTools?: boolean
+      includeInternal?: boolean
+      since?: string | null
+    } = {},
+  ): Promise<Blob> {
+    const token = apiClient.getAccessToken()
+    if (!token) {
+      throw new Error('未登录')
+    }
+
+    const params = new URLSearchParams()
+    params.set('download', 'true')
+
+    if (options.format) {
+      params.set('format', options.format)
+    }
+
+    if (options.includeTools !== undefined) {
+      params.set('include_tools', String(options.includeTools))
+    }
+
+    if (options.includeInternal !== undefined) {
+      params.set('include_internal', String(options.includeInternal))
+    }
+
+    if (options.since) {
+      params.set('since', options.since)
+    }
+
+    const response = await fetch(`/api/sessions/${sessionId}/export?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      let detail = `HTTP error! status: ${response.status}`
+
+      try {
+        const data = await response.json()
+        if (data?.detail) {
+          detail = data.detail
+        }
+      } catch {
+        // Ignore JSON parse errors; fall back to default detail.
+      }
+
+      throw new Error(detail)
+    }
+
+    return response.blob()
+  },
 }
 
 // ==================== Chat API ====================

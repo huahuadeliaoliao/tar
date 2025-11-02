@@ -6,6 +6,7 @@ import { useFileUpload } from '@/composables/useFileUpload'
 import { sessionsApi, chatApi, filesApi } from '@/api'
 import Sidebar from '@/components/layout/Sidebar.vue'
 import ModelSelector from '@/components/ui/ModelSelector.vue'
+import Button from '@/components/ui/Button.vue'
 import {
   AiConversation,
   AiMessage,
@@ -24,7 +25,7 @@ import type {
   MessagePart,
 } from '@/types/chat'
 import type { SSEEvent } from '@/types/api'
-import { Loader2, Settings, Check, X, Edit2, Copy, ChevronDown } from 'lucide-vue-next'
+import { Loader2, Settings, Check, X, Edit2, Copy, ChevronDown, Download } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,9 +44,42 @@ const editingModel = ref(false)
 const editedModelId = ref('')
 const updating = ref(false)
 
+const exportDialogOpen = ref(false)
+const exportFormat = ref<'json' | 'ndjson' | 'markdown'>('json')
+const exportIncludeTools = ref(true)
+const exportIncludeInternal = ref(false)
+const exporting = ref(false)
+
+const exportFormats = [
+  { value: 'json', label: 'JSON' },
+  { value: 'ndjson', label: 'NDJSON' },
+  { value: 'markdown', label: 'Markdown' },
+] as const
+
+const exportExtensionMap = {
+  json: 'json',
+  ndjson: 'ndjson',
+  markdown: 'md',
+} as const
+
 const sessionId = computed(() => {
   const id = route.params.id
   return id ? Number(id) : null
+})
+
+const canExport = computed(() => {
+  if (!sessionId.value) return false
+  if (loading.value) return false
+  if (messages.value.length === 0) return false
+  const lastMessage = messages.value[messages.value.length - 1]
+  if (
+    lastMessage &&
+    lastMessage.role === 'assistant' &&
+    (lastMessage as AssistantMessage).status === 'streaming'
+  ) {
+    return false
+  }
+  return true
 })
 
 async function loadSessionMessages() {
@@ -788,6 +822,47 @@ function cancelEditModel() {
   editedModelId.value = ''
 }
 
+function openExportDialog() {
+  if (!canExport.value) return
+  exportDialogOpen.value = true
+}
+
+function closeExportDialog() {
+  if (exporting.value) return
+  exportDialogOpen.value = false
+}
+
+async function handleExport() {
+  if (!sessionId.value || exporting.value) return
+
+  exporting.value = true
+
+  try {
+    const blob = await sessionsApi.export(sessionId.value, {
+      format: exportFormat.value,
+      includeTools: exportIncludeTools.value,
+      includeInternal: exportIncludeInternal.value,
+    })
+
+    const filename = `session-${sessionId.value}.${exportExtensionMap[exportFormat.value]}`
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    document.body.removeChild(anchor)
+    URL.revokeObjectURL(url)
+
+    exportDialogOpen.value = false
+  } catch (error: any) {
+    console.error('Failed to export session:', error)
+    alert(error?.message || '导出失败，请稍后重试')
+  } finally {
+    exporting.value = false
+  }
+}
+
 watch(
   () => route.params.id,
   async () => {
@@ -800,6 +875,14 @@ watch(
   },
   { immediate: true },
 )
+
+watch(sessionId, () => {
+  exportDialogOpen.value = false
+  exportFormat.value = 'json'
+  exportIncludeTools.value = true
+  exportIncludeInternal.value = false
+  exporting.value = false
+})
 
 onMounted(() => {
   if (sessionsStore.models.length === 0) {
@@ -894,6 +977,20 @@ onMounted(() => {
                     ?.name || sessionsStore.currentSession?.model_id
                 }}
               </span>
+              <button
+                type="button"
+                @click="openExportDialog"
+                :disabled="!canExport"
+                :class="[
+                  'rounded-md p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-300',
+                  !canExport
+                    ? 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-zinc-500 dark:hover:bg-transparent dark:hover:text-zinc-400'
+                    : '',
+                ]"
+                title="导出会话"
+              >
+                <Download :size="16" />
+              </button>
               <button
                 @click="startEditModel"
                 class="rounded-md p-1.5 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-300"
@@ -1057,5 +1154,108 @@ onMounted(() => {
         @submit="handleSubmit"
       />
     </div>
+    <Teleport to="body">
+      <div
+        v-if="exportDialogOpen"
+        class="fixed inset-0 z-50 flex items-end justify-center bg-zinc-950/60 px-4 pb-6 sm:items-center sm:p-6"
+        @click.self="closeExportDialog"
+      >
+        <div
+          class="w-full max-w-md overflow-hidden rounded-3xl border border-zinc-200/60 bg-white/95 shadow-2xl backdrop-blur-sm dark:border-zinc-800/60 dark:bg-zinc-900/95"
+        >
+          <div
+            class="flex items-start justify-between gap-4 border-b border-zinc-200/60 p-4 dark:border-zinc-800/60"
+          >
+            <div>
+              <h2 class="text-base font-semibold text-zinc-900 dark:text-zinc-100">导出会话</h2>
+              <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">选择需要的格式与内容</p>
+            </div>
+            <button
+              type="button"
+              class="rounded-md p-1.5 text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+              @click="closeExportDialog"
+              :disabled="exporting"
+            >
+              <X :size="16" />
+            </button>
+          </div>
+          <div class="space-y-5 p-4">
+            <div>
+              <p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">导出格式</p>
+              <div class="mt-3 grid grid-cols-3 gap-2">
+                <Button
+                  v-for="option in exportFormats"
+                  :key="option.value"
+                  size="sm"
+                  variant="outline"
+                  class="w-full"
+                  :class="
+                    option.value === exportFormat
+                      ? '!border-zinc-900 !bg-zinc-900 !text-zinc-50 font-semibold shadow-sm hover:!bg-zinc-800 dark:!border-zinc-100 dark:!bg-zinc-100 dark:!text-zinc-900 dark:hover:!bg-zinc-200'
+                      : ''
+                  "
+                  :disabled="exporting"
+                  @click="exportFormat = option.value"
+                >
+                  {{ option.label }}
+                </Button>
+              </div>
+            </div>
+            <div class="space-y-3">
+              <label
+                class="flex items-center justify-between gap-4 rounded-2xl border border-zinc-200/70 bg-white/70 px-4 py-3 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-800/70 dark:bg-zinc-900/50 dark:text-zinc-200"
+              >
+                <div>
+                  <span>包含工具执行记录</span>
+                  <p class="mt-1 text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                    导出工具调用的输入与输出详情
+                  </p>
+                </div>
+                <input
+                  v-model="exportIncludeTools"
+                  type="checkbox"
+                  class="h-4 w-4 accent-zinc-900 dark:accent-zinc-200"
+                  :disabled="exporting"
+                />
+              </label>
+              <label
+                class="flex items-center justify-between gap-4 rounded-2xl border border-zinc-200/70 bg-white/70 px-4 py-3 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-800/70 dark:bg-zinc-900/50 dark:text-zinc-200"
+              >
+                <div>
+                  <span>包含内部消息</span>
+                  <p class="mt-1 text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                    输出包含工具生成的内部消息内容
+                  </p>
+                </div>
+                <input
+                  v-model="exportIncludeInternal"
+                  type="checkbox"
+                  class="h-4 w-4 accent-zinc-900 dark:accent-zinc-200"
+                  :disabled="exporting"
+                />
+              </label>
+            </div>
+            <div class="flex flex-col gap-2 sm:flex-row sm:justify-end sm:gap-3">
+              <Button
+                variant="ghost"
+                class="w-full sm:w-auto"
+                :disabled="exporting"
+                @click="closeExportDialog"
+              >
+                取消
+              </Button>
+              <Button
+                class="w-full sm:w-auto"
+                :disabled="exporting || !canExport"
+                @click="handleExport"
+              >
+                <Loader2 v-if="exporting" :size="16" class="mr-2 animate-spin" />
+                <span>{{ exporting ? '导出中...' : '导出' }}</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

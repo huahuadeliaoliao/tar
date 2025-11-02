@@ -88,7 +88,6 @@ class Config:
         self.LLM_MAX_TOKENS: Optional[int] = self._parse_optional_int(
             os.getenv("LLM_MAX_TOKENS", self._none_to_empty(llm.get("max_tokens")))
         )
-        self.LLM_FREQUENCY_PENALTY: float = float(os.getenv("LLM_FREQUENCY_PENALTY", llm.get("frequency_penalty", 0.0)))
         self.LLM_PRESENCE_PENALTY: float = float(os.getenv("LLM_PRESENCE_PENALTY", llm.get("presence_penalty", 0.0)))
 
         self.SYSTEM_PROMPT: str = prompts.get("system", "")
@@ -126,6 +125,21 @@ class Config:
         self.PLAYWRIGHT_MAX_EXTRACTIONS: int = int(playwright_settings.get("max_extractions", 20))
         self.PLAYWRIGHT_MAX_HTML_CHARS: int = int(playwright_settings.get("max_html_chars", 150000))
         self.PLAYWRIGHT_MAX_MARKDOWN_CHARS: int = int(playwright_settings.get("max_markdown_chars", 20000))
+        max_extraction_raw = playwright_settings.get("max_extraction_chars")
+        if max_extraction_raw in (None, ""):
+            max_extraction_raw = 8000
+        self.PLAYWRIGHT_MAX_EXTRACTION_CHARS: int = int(max_extraction_raw)
+        forbid_selectors_raw = playwright_settings.get("forbid_selectors", ["body", "html", "*"])
+        if isinstance(forbid_selectors_raw, (list, tuple)):
+            self.PLAYWRIGHT_FORBID_SELECTORS: List[str] = [
+                str(item).strip().lower() for item in forbid_selectors_raw if str(item).strip()
+            ]
+        else:
+            selector_value = str(forbid_selectors_raw).strip()
+            self.PLAYWRIGHT_FORBID_SELECTORS = [selector_value.lower()] if selector_value else []
+        self.PLAYWRIGHT_ALLOW_BROAD_SELECTOR: bool = self._parse_bool(
+            playwright_settings.get("allow_broad_selector", False)
+        )
         self.PLAYWRIGHT_BROWSERS_PATH: str = playwright_settings.get("browsers_path", "/ms-playwright")
         self.PLAYWRIGHT_MAX_DOWNLOAD_SIZE_BYTES: int = int(
             playwright_settings.get("max_download_file_size_bytes", 30 * 1024 * 1024)

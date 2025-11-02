@@ -152,10 +152,11 @@ def export_session(
         None, description="Only include messages created at or after this ISO8601 timestamp."
     ),
     download: bool = Query(False, description="Force download by adding a Content-Disposition header."),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Export a session's messages in JSON, NDJSON, or Markdown formats."""
-    session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    session = db.query(SessionModel).filter(SessionModel.id == session_id, SessionModel.user_id == user.id).first()
 
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")

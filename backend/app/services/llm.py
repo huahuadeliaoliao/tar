@@ -48,7 +48,6 @@ async def call_llm_with_tools(
         "stream": stream,
         "temperature": temperature,
         "top_p": config.LLM_TOP_P,
-        "frequency_penalty": config.LLM_FREQUENCY_PENALTY,
         "presence_penalty": config.LLM_PRESENCE_PENALTY,
     }
 

@@ -256,8 +256,9 @@ AVAILABLE_TOOLS = [
             "name": "playwright_browse",
             "description": (
                 "Open a web page in a headless browser, perform simple interactions, and extract structured content or "
-                "screenshots. HTML extractions are converted to Markdown and truncated to control token usage, so choose "
-                "specific selectors (e.g., 'main', '.markdown-body') for best results."
+                "screenshots. Each extraction (except 'evaluate') must include a precise CSS/XPath selector or explicit "
+                "page range. Broad selectors such as 'body', 'html', or '*' are rejected; segment the request with "
+                "keywords or page ranges when you need more coverage."
             ),
             "parameters": {
                 "type": "object",
@@ -304,7 +305,8 @@ AVAILABLE_TOOLS = [
                         "type": "array",
                         "description": (
                             "Extraction instructions. Supported types: inner_text, all_inner_texts, attribute, html, "
-                            "outer_html, count, evaluate. html/outer_html results are returned as Markdown with length limits."
+                            "outer_html, count, evaluate. Provide a selector for every type except evaluate. "
+                            "html/outer_html results are returned as Markdown with length limits."
                         ),
                         "items": {
                             "type": "object",
@@ -321,7 +323,10 @@ AVAILABLE_TOOLS = [
                                         "evaluate",
                                     ],
                                 },
-                                "selector": {"type": "string"},
+                                "selector": {
+                                    "type": "string",
+                                    "description": "Required for all types except 'evaluate'. Must not be 'body', 'html', or '*'.",
+                                },
                                 "name": {"type": "string"},
                                 "attribute": {"type": "string"},
                                 "expression": {"type": "string"},
@@ -333,6 +338,30 @@ AVAILABLE_TOOLS = [
                                 "pick_first": {
                                     "type": "boolean",
                                     "description": "When true, automatically use the first matching element to avoid strict-mode violations.",
+                                },
+                                "keywords": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Optional keyword list. Only segments containing at least one keyword are kept.",
+                                },
+                                "page_range": {
+                                    "description": "Optional page filter (e.g., '2-4' or [2,4]) for paginated content.",
+                                    "oneOf": [
+                                        {
+                                            "type": "string",
+                                            "description": "Single page like '3' or range '2-4'.",
+                                        },
+                                        {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2,
+                                            "description": "Array of one or two positive integers, [start, end].",
+                                        },
+                                    ],
                                 },
                             },
                             "required": ["type"],

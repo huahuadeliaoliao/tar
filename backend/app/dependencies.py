@@ -9,7 +9,7 @@ from app.database import get_db
 from app.models import User
 
 # HTTP Bearer scheme instance.
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
@@ -29,6 +29,13 @@ def get_current_user(
         HTTPException: When the token is invalid, the type is incorrect, or the
         user cannot be located.
     """
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     token = credentials.credentials
 
     # Decode and validate the token.
@@ -94,6 +101,13 @@ def verify_refresh_token(
         HTTPException: When the token is invalid, not a refresh token, or the
         user does not exist.
     """
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     token = credentials.credentials
 
     # Decode and validate the token.

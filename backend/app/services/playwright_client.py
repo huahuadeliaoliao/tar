@@ -12,7 +12,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from playwright.sync_api import Browser, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
@@ -28,6 +28,7 @@ SELECTOR_STATES = {"attached", "detached", "visible", "hidden"}
 _html_converter: Optional[Any] = None
 _html_converter_lock = threading.Lock()
 _html_converter_import_error: Optional[str] = None
+TRUNCATION_SUFFIX = "[...truncated...]"
 
 
 class StrictModeViolation(RuntimeError):
@@ -218,6 +219,53 @@ class PlaywrightManager:
                 logs,
             )
 
+        allow_broad_selector = config.PLAYWRIGHT_ALLOW_BROAD_SELECTOR
+        forbidden_selectors = {sel.lower() for sel in config.PLAYWRIGHT_FORBID_SELECTORS}
+
+        for idx, extraction in enumerate(extracts, start=1):
+            if not isinstance(extraction, dict):
+                return self._error("invalid_extraction", f"Extraction {idx} must be an object with parameters.", logs)
+
+            extraction_type = str(extraction.get("type", "")).strip().lower()
+
+            if extraction_type != "evaluate":
+                selector_value = extraction.get("selector")
+                if not isinstance(selector_value, str) or not selector_value.strip():
+                    return self._error(
+                        "invalid_selector",
+                        f"Extraction {idx} requires a non-empty 'selector'. Provide a precise CSS/XPath selector.",
+                        logs,
+                    )
+                normalized_selector = selector_value.strip()
+                if not allow_broad_selector and normalized_selector.lower() in forbidden_selectors:
+                    return self._error(
+                        "invalid_selector",
+                        (
+                            f"Extraction {idx} selector '{normalized_selector}' is too broad. "
+                            "Target the specific element you need instead of the entire page."
+                        ),
+                        logs,
+                    )
+                extraction["selector"] = normalized_selector
+
+            try:
+                keywords = self._normalize_keywords(extraction.get("keywords"))
+            except ValueError as exc:
+                return self._error("invalid_keywords", f"Extraction {idx}: {exc}", logs)
+            if keywords:
+                extraction["keywords"] = keywords
+            elif "keywords" in extraction:
+                extraction.pop("keywords", None)
+
+            try:
+                page_range = self._normalize_page_range(extraction.get("page_range"))
+            except ValueError as exc:
+                return self._error("invalid_page_range", f"Extraction {idx}: {exc}", logs)
+            if page_range:
+                extraction["page_range"] = list(page_range)
+            elif "page_range" in extraction:
+                extraction.pop("page_range", None)
+
         with self._lock:
             try:
                 self._ensure_browser()
@@ -359,6 +407,12 @@ class PlaywrightManager:
             entry: Dict[str, Any] = {"type": extraction_type}
             if isinstance(name, str) and name.strip():
                 entry["name"] = name.strip()
+            keywords_list = extraction.get("keywords")
+            if isinstance(keywords_list, list) and keywords_list:
+                entry["keywords"] = list(keywords_list)
+            page_range_value = extraction.get("page_range")
+            if isinstance(page_range_value, list) and len(page_range_value) == 2:
+                entry["page_range"] = (int(page_range_value[0]), int(page_range_value[1]))
 
             if extraction_type == "evaluate":
                 expression = extraction.get("expression")
@@ -459,16 +513,18 @@ class PlaywrightManager:
         logs: List[str],
         page_url: Optional[str],
     ) -> List[Dict[str, Any]]:
-        """Convert large HTML payloads to Markdown and enforce length limits."""
+        """Convert large HTML payloads to Markdown, apply filters, and enforce length limits."""
         processed: List[Dict[str, Any]] = []
         converter = _get_html_converter()
         max_html = max(config.PLAYWRIGHT_MAX_HTML_CHARS, 0)
         max_markdown = max(config.PLAYWRIGHT_MAX_MARKDOWN_CHARS, 0)
+        max_extraction_chars = max(config.PLAYWRIGHT_MAX_EXTRACTION_CHARS, 0)
 
         for idx, item in enumerate(extracts, start=1):
             entry = dict(item)
             extraction_type = entry.get("type")
             value = entry.get("value")
+            metadata = dict(entry.pop("metadata", {}) or {})
 
             if isinstance(value, str) and extraction_type in {"html", "outer_html"}:
                 raw_html_length = len(value)
@@ -506,13 +562,65 @@ class PlaywrightManager:
 
                 entry["value"] = markdown_text
                 entry["value_format"] = "markdown" if conversion_successful else "html"
-                entry["metadata"] = {
-                    "raw_html_length": raw_html_length,
-                    "markdown_length": len(markdown_text),
-                    "raw_html_truncated": html_truncated,
-                    "markdown_truncated": markdown_truncated,
-                    "conversion": "markdown" if conversion_successful else "html",
-                }
+                metadata.update(
+                    {
+                        "raw_html_length": raw_html_length,
+                        "markdown_length": len(markdown_text),
+                        "raw_html_truncated": html_truncated,
+                        "markdown_truncated": markdown_truncated,
+                        "conversion": "markdown" if conversion_successful else "html",
+                    }
+                )
+
+            keywords = entry.pop("keywords", None)
+            page_range = entry.pop("page_range", None)
+            filters_metadata: Dict[str, Any] = {}
+
+            if keywords:
+                filtered_value, keyword_meta = self._filter_by_keywords(entry.get("value"), keywords)
+                filters_metadata["keywords"] = keyword_meta
+                entry["value"] = filtered_value
+                if keyword_meta.get("removed_all"):
+                    logs.append(
+                        f"Extraction {idx}: Keyword filter removed all content. Adjust keywords or refine the selector."
+                    )
+
+            if page_range:
+                filtered_value, page_meta = self._filter_by_page_range(entry.get("value"), page_range)
+                filters_metadata["page_range"] = page_meta
+                entry["value"] = filtered_value
+                if page_meta.get("removed_all"):
+                    logs.append(
+                        f"Extraction {idx}: Page range {page_meta.get('start')}-{page_meta.get('end')} removed all content."
+                    )
+
+            if filters_metadata:
+                metadata.setdefault("filters", {}).update(filters_metadata)
+
+            value_after_filters = entry.get("value")
+
+            if max_extraction_chars and isinstance(value_after_filters, (str, list)):
+                truncated_value, truncation_meta = self._truncate_value(value_after_filters, max_extraction_chars)
+                entry["value"] = truncated_value
+                metadata.setdefault("length", {})
+                metadata["length"]["original"] = truncation_meta.get("original_length", 0)
+                metadata["length"]["kept"] = truncation_meta.get("kept_length", 0)
+                if truncation_meta.get("truncated"):
+                    metadata["truncated"] = True
+                    metadata["truncation_message"] = (
+                        f"Trimmed to {max_extraction_chars} characters. Narrow selectors or add keywords/page_range."
+                    )
+                    logs.append(
+                        f"Extraction {idx}: Value truncated from {truncation_meta.get('original_length', 0)} to "
+                        f"{truncation_meta.get('kept_length', 0)} characters."
+                    )
+                else:
+                    metadata.setdefault("truncated", False)
+            elif metadata:
+                metadata.setdefault("truncated", False)
+
+            if metadata:
+                entry["metadata"] = metadata
 
             processed.append(entry)
 
@@ -557,11 +665,214 @@ class PlaywrightManager:
 
         return metadata, encoded_png
 
+    def _normalize_keywords(self, raw_keywords: Any) -> List[str]:
+        if raw_keywords is None:
+            return []
+        if not isinstance(raw_keywords, list):
+            raise ValueError("keywords must be an array of strings.")
+        cleaned: List[str] = []
+        for keyword in raw_keywords:
+            if not isinstance(keyword, str):
+                raise ValueError("keywords array must contain only strings.")
+            stripped = keyword.strip()
+            if stripped:
+                cleaned.append(stripped)
+        return cleaned
+
+    def _normalize_page_range(self, raw_page_range: Any) -> Optional[Tuple[int, int]]:
+        if raw_page_range in (None, "", []):
+            return None
+
+        def _validate_bounds(start: int, end: int) -> Tuple[int, int]:
+            if start < 1 or end < 1:
+                raise ValueError("page_range values must be positive integers.")
+            if end < start:
+                raise ValueError("page_range end must be greater than or equal to start.")
+            return start, end
+
+        if isinstance(raw_page_range, str):
+            text = raw_page_range.strip()
+            if not text:
+                return None
+            if "-" in text:
+                start_text, end_text = text.split("-", 1)
+                start = int(start_text.strip())
+                end = int(end_text.strip())
+            else:
+                start = end = int(text)
+            return _validate_bounds(start, end)
+
+        if isinstance(raw_page_range, (list, tuple)):
+            if len(raw_page_range) == 1:
+                value = int(raw_page_range[0])
+                return _validate_bounds(value, value)
+            if len(raw_page_range) >= 2:
+                start = int(raw_page_range[0])
+                end = int(raw_page_range[1])
+                return _validate_bounds(start, end)
+
+        raise ValueError("page_range must be a string like '2-4' or an array [start, end].")
+
+    def _filter_by_keywords(self, value: Any, keywords: List[str]) -> Tuple[Any, Dict[str, Any]]:
+        meta: Dict[str, Any] = {
+            "applied": False,
+            "matched_segments": 0,
+            "keyword_count": len(keywords),
+            "removed_all": False,
+        }
+        if not keywords:
+            return value, meta
+
+        lowered_keywords = [kw.lower() for kw in keywords]
+        meta["applied"] = True
+
+        if isinstance(value, str):
+            lines = value.splitlines()
+            kept_lines = [line for line in lines if any(kw in line.lower() for kw in lowered_keywords)]
+            meta["matched_segments"] = len(kept_lines)
+            if kept_lines:
+                return "\n".join(kept_lines), meta
+            meta["removed_all"] = True
+            return "", meta
+
+        if isinstance(value, list):
+            kept_items = []
+            for item in value:
+                text = str(item)
+                if any(kw in text.lower() for kw in lowered_keywords):
+                    kept_items.append(item)
+            meta["matched_segments"] = len(kept_items)
+            if kept_items:
+                return kept_items, meta
+            meta["removed_all"] = True
+            return [], meta
+
+        meta["applied"] = False
+        meta["reason"] = "unsupported_type"
+        return value, meta
+
+    def _filter_by_page_range(self, value: Any, page_range: Tuple[int, int]) -> Tuple[Any, Dict[str, Any]]:
+        start, end = page_range
+        meta: Dict[str, Any] = {
+            "applied": True,
+            "start": start,
+            "end": end,
+            "total_segments": 0,
+            "kept_segments": 0,
+            "removed_all": False,
+        }
+
+        if isinstance(value, list):
+            total = len(value)
+            meta["total_segments"] = total
+            if total == 0:
+                return value, meta
+            start_idx = max(start - 1, 0)
+            end_idx = min(end, total)
+            filtered = value[start_idx:end_idx]
+            meta["kept_segments"] = len(filtered)
+            if not filtered:
+                meta["removed_all"] = True
+            return filtered, meta
+
+        if isinstance(value, str):
+            if not value:
+                return value, meta
+            if "\n\n" in value:
+                segments = value.split("\n\n")
+                joiner = "\n\n"
+            else:
+                segments = value.splitlines()
+                joiner = "\n"
+            total = len(segments)
+            meta["total_segments"] = total
+            if total == 0:
+                return value, meta
+            start_idx = max(start - 1, 0)
+            end_idx = min(end, total)
+            filtered_segments = segments[start_idx:end_idx]
+            meta["kept_segments"] = len(filtered_segments)
+            if not filtered_segments:
+                meta["removed_all"] = True
+                return "", meta
+            return joiner.join(filtered_segments), meta
+
+        meta["applied"] = False
+        meta["reason"] = "unsupported_type"
+        return value, meta
+
+    def _truncate_value(self, value: Any, limit: int) -> Tuple[Any, Dict[str, Any]]:
+        meta: Dict[str, Any] = {
+            "truncated": False,
+            "original_length": 0,
+            "kept_length": 0,
+        }
+        if limit <= 0:
+            return value, meta
+
+        if isinstance(value, str):
+            original_length = len(value)
+            meta["original_length"] = original_length
+            if original_length <= limit:
+                meta["kept_length"] = original_length
+                return value, meta
+
+            suffix = f"\n{TRUNCATION_SUFFIX}" if limit > len(TRUNCATION_SUFFIX) + 1 else ""
+            available = max(limit - len(suffix), 0)
+            truncated_text = value[:available].rstrip()
+            if suffix:
+                truncated_text = f"{truncated_text}{suffix}"
+            else:
+                truncated_text = value[:limit]
+            meta["truncated"] = True
+            meta["kept_length"] = len(truncated_text)
+            return truncated_text, meta
+
+        if isinstance(value, list):
+            text_lengths = [len(str(item)) for item in value]
+            original_length = sum(text_lengths)
+            meta["original_length"] = original_length
+            if original_length <= limit:
+                meta["kept_length"] = original_length
+                return value, meta
+
+            remaining = limit
+            truncated_items: List[Any] = []
+            for item, item_length in zip(value, text_lengths, strict=False):
+                if remaining <= 0:
+                    break
+                if item_length <= remaining:
+                    truncated_items.append(item)
+                    remaining -= item_length
+                    continue
+                slice_length = max(remaining - len(TRUNCATION_SUFFIX), 0)
+                truncated_item = str(item)[:slice_length].rstrip()
+                if slice_length > 0:
+                    truncated_item = f"{truncated_item}{TRUNCATION_SUFFIX}"
+                else:
+                    truncated_item = TRUNCATION_SUFFIX
+                truncated_items.append(truncated_item)
+                remaining = 0
+                break
+
+            meta["truncated"] = True
+            meta["kept_length"] = sum(len(str(item)) for item in truncated_items)
+            return truncated_items, meta
+
+        return value, meta
+
     def _require_selector(self, payload: Dict[str, Any], context: str) -> str:
         selector = payload.get("selector")
         if not isinstance(selector, str) or not selector.strip():
             raise ValueError(f"{context} requires a non-empty 'selector'.")
-        return selector.strip()
+        normalized_selector = selector.strip()
+        if not config.PLAYWRIGHT_ALLOW_BROAD_SELECTOR and normalized_selector.lower() in {
+            sel.lower() for sel in config.PLAYWRIGHT_FORBID_SELECTORS
+        }:
+            raise ValueError(
+                f"{context} selector '{normalized_selector}' is not allowed. Provide a more specific selector."
+            )
+        return normalized_selector
 
     def _error(self, code: str, message: str, logs: List[str]) -> Dict[str, Any]:
         logs.append(f"Error: {message}")

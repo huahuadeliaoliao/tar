@@ -19,7 +19,6 @@ The backend reads all runtime settings from `config.toml` (located at the reposi
   - `LLM_TEMPERATURE`
   - `LLM_TOP_P`
   - `LLM_MAX_TOKENS`
-  - `LLM_FREQUENCY_PENALTY`
   - `LLM_PRESENCE_PENALTY`
   - `MAX_FILE_SIZE`
   - `LIBREOFFICE_TIMEOUT`
@@ -104,6 +103,12 @@ The `[ddgs]` section tunes the built-in `ddgs_search` tool:
 - Ensure `libreoffice` CLI is installed and matches the `libreoffice.path`.
 - `libreoffice.timeout` guards long-running conversions.
 - `libreoffice.pdf_to_image_dpi` controls rendering DPI before compression.
+
+## Playwright
+
+- `playwright.max_extraction_chars`: Maximum characters kept per extraction result (default 8000). Anything longer is trimmed and flagged.
+- `playwright.forbid_selectors`: List of disallowed generic selectors (defaults to `["body", "html", "*"]`).
+- `playwright.allow_broad_selector`: Whether to bypass the selector blacklist (defaults to `false`; enable only for debugging).
 
 ## Background processing
 

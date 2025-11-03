@@ -29,6 +29,7 @@ The backend reads all runtime settings from `config.toml` (located at the reposi
   - `DDGS_MAX_THREADS`
   - `DDGS_CACHE_TTL_SECONDS`
   - `DDGS_CACHE_MAXSIZE`
+  - `AGENT_DEFAULT_TIMEZONE`
 
 > **Tip:** Check the `Config` class in `app/config.py` for the authoritative list of overrides and defaults.
 
@@ -46,7 +47,7 @@ The backend reads all runtime settings from `config.toml` (located at the reposi
 | `[prompts]`          | System prompt plus error/warning messages shown to the agent.        |
 | `[file_uploads]`     | File size limit, allowed MIME types, and image compression settings. |
 | `[libreoffice]`      | CLI path and timeout values for LibreOffice conversions.             |
-| `[agent]`            | Agent loop guard rails (max iterations, tool retry limit).           |
+| `[agent]`            | Agent loop guard rails (max iterations, tool retries, default timezone). |
 | `[playwright]`       | Timeouts and limits for the Playwright browsing tool.                |
 | `[background_tasks]` | Worker pool size for background document processing.                 |
 
@@ -104,11 +105,13 @@ The `[ddgs]` section tunes the built-in `ddgs_search` tool:
 - `libreoffice.timeout` guards long-running conversions.
 - `libreoffice.pdf_to_image_dpi` controls rendering DPI before compression.
 
+## Agent loop
+
+- `agent.default_timezone`: Timezone identifier (e.g., `UTC`, `Asia/Shanghai`) appended to the system prompt. Defaults to `UTC` when unset or blank and may also be overridden via the `AGENT_DEFAULT_TIMEZONE` environment variable.
+
 ## Playwright
 
 - `playwright.max_extraction_chars`: Maximum characters kept per extraction result (default 8000). Anything longer is trimmed and flagged.
-- `playwright.forbid_selectors`: List of disallowed generic selectors (defaults to `["body", "html", "*"]`).
-- `playwright.allow_broad_selector`: Whether to bypass the selector blacklist (defaults to `false`; enable only for debugging).
 
 ## Background processing
 

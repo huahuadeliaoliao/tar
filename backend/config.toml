@@ -122,6 +122,7 @@ pdf_to_image_dpi = 150
 [agent]
 max_iterations = 50
 max_retry_on_multiple_tools = 3
+default_timezone = "Asia/Shanghai"
 
 [background_tasks]
 max_workers = 8
@@ -135,7 +136,5 @@ max_extractions = 20
 max_html_chars = 150000
 max_markdown_chars = 20000
 max_extraction_chars = 8000
-forbid_selectors = ["body", "html", "*"]
-allow_broad_selector = false
 browsers_path = "/ms-playwright"
 max_download_file_size_bytes = 31457280

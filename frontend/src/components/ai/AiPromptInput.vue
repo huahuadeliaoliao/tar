@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { cn } from '@/utils/cn'
 import { ArrowUp, Paperclip } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
@@ -25,6 +25,7 @@ const inputValue = ref('')
 const textareaRef = ref<HTMLTextAreaElement>()
 const fileInputRef = ref<HTMLInputElement>()
 const attachedFiles = ref<FileAttachment[]>([])
+let resizePending = false
 
 const uniqueId = `prompt-input-${Math.random().toString(36).substr(2, 9)}`
 const textareaId = `${uniqueId}-textarea`
@@ -57,6 +58,7 @@ function handleSubmit() {
 
   if (textareaRef.value) {
     textareaRef.value.style.height = 'auto'
+    scheduleTextareaResize()
   }
 }
 
@@ -67,15 +69,28 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-function adjustHeight() {
+function updateTextareaHeight() {
   if (!textareaRef.value) return
 
-  textareaRef.value.style.height = 'auto'
+  const textarea = textareaRef.value
+  const maxHeight = Math.min(window.innerHeight * 0.5, 320)
 
-  const maxHeight = window.innerHeight * 0.5
-  const newHeight = Math.min(textareaRef.value.scrollHeight, maxHeight)
+  textarea.style.height = 'auto'
 
-  textareaRef.value.style.height = `${newHeight}px`
+  const desiredHeight = Math.min(textarea.scrollHeight, maxHeight)
+
+  textarea.style.height = `${desiredHeight}px`
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden'
+}
+
+function scheduleTextareaResize() {
+  if (resizePending) return
+  resizePending = true
+
+  requestAnimationFrame(() => {
+    resizePending = false
+    updateTextareaHeight()
+  })
 }
 
 function openFilePicker() {
@@ -149,6 +164,7 @@ async function handleFileSelect(event: Event) {
   }
 
   target.value = ''
+  scheduleTextareaResize()
 }
 
 function removeFile(index: number) {
@@ -161,6 +177,7 @@ function removeFile(index: number) {
     }, 100)
   }
   attachedFiles.value.splice(index, 1)
+  scheduleTextareaResize()
 }
 
 function appendPastedFiles(files: File[]) {
@@ -177,6 +194,7 @@ function appendPastedFiles(files: File[]) {
 
     attachedFiles.value.push(fileAttachment)
   }
+  scheduleTextareaResize()
 }
 
 function handlePaste(event: ClipboardEvent) {
@@ -199,6 +217,10 @@ function handlePaste(event: ClipboardEvent) {
   event.preventDefault()
   appendPastedFiles(imageFiles)
 }
+
+onMounted(() => {
+  scheduleTextareaResize()
+})
 </script>
 
 <template>
@@ -245,7 +267,7 @@ function handlePaste(event: ClipboardEvent) {
             :disabled="disabled"
             class="w-full resize-none rounded-2xl border border-zinc-300 bg-white px-4 py-3 text-sm shadow-sm outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-500 focus:shadow-md focus:ring-4 focus:ring-[rgba(113,113,122,0.35)] disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-400 sm:px-5 sm:py-3.5"
             rows="1"
-            @input="adjustHeight"
+            @input="scheduleTextareaResize"
             @keydown="handleKeydown"
             @paste="handlePaste"
           />

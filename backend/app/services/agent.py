@@ -438,6 +438,151 @@ def build_tool_message_content(tool_payload: Any) -> Any:
     return json.dumps(tool_payload, ensure_ascii=False)
 
 
+def _value_has_content(value: Any, extraction_type: Optional[str]) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (int, float)):
+        if extraction_type == "count":
+            return value != 0
+        return True
+    if isinstance(value, list):
+        return any(str(item).strip() for item in value)
+    if isinstance(value, dict):
+        return bool(value)
+    return True
+
+
+def _playwright_feedback_message(result: Dict[str, Any]) -> Optional[str]:
+    if not result.get("success"):
+        return None
+
+    warnings = result.get("warnings")
+    feedback_parts: List[str] = []
+
+    def add_feedback(message: str) -> None:
+        if message and message not in feedback_parts:
+            feedback_parts.append(message)
+
+    if isinstance(warnings, list):
+        for warning in warnings:
+            if not isinstance(warning, str):
+                continue
+            if "view-source" in warning:
+                add_feedback(
+                    "Detected `view-source:` usage. Playwright cannot render the page source directly. Visit the live page instead and probe the DOM with `evaluate()` or `count`."
+                )
+            else:
+                add_feedback(warning)
+
+    extractions = result.get("extractions")
+    if not isinstance(extractions, list) or not extractions:
+        add_feedback(
+            "Playwright returned no extractions. Probe the DOM with `evaluate` or `count`, then follow up with precise "
+            "selectors such as `inner_text`/`all_inner_texts` to capture the needed content."
+        )
+        return " ".join(feedback_parts) if feedback_parts else None
+
+    meaningful = False
+    non_evaluate_found = False
+    for extraction in extractions:
+        if not isinstance(extraction, dict):
+            continue
+        extraction_type = str(extraction.get("type", "")).strip().lower()
+        if extraction_type and extraction_type != "evaluate":
+            non_evaluate_found = True
+        value = extraction.get("value")
+        if _value_has_content(value, extraction_type):
+            meaningful = True
+        else:
+            if extraction_type != "evaluate":
+                name = extraction.get("name") or extraction_type or "extraction"
+                add_feedback(
+                    f"Playwright extraction `{name}` returned no content. Confirm the selector by probing with `evaluate` or `count`, "
+                    "then retry with a more specific path (for example `main article h2`)."
+                )
+
+        metadata = extraction.get("metadata")
+        if isinstance(metadata, dict):
+            status_reason = metadata.get("status_reason")
+            if status_reason == "selector_missing":
+                add_feedback(
+                    "No matching elements were found. Run an `evaluate(() => [...document.querySelectorAll('<selector>')].map(el => el.outerHTML))` probe to inspect the DOM and adjust the selector."
+                )
+            elif status_reason == "empty_after_fallback":
+                add_feedback(
+                    "Fallback selectors still returned empty results. Narrow the selector or inspect the DOM with `evaluate` before retrying."
+                )
+
+            selector_meta = metadata.get("selector")
+            if isinstance(selector_meta, dict):
+                if selector_meta.get("fallback_used") and metadata.get("truncated"):
+                    add_feedback(
+                        "A fallback selector produced a large, truncated payload. Inspect the DOM (for example with "
+                        "`evaluate` returning the matching element path) and switch to a narrower selector."
+                    )
+                suggested = selector_meta.get("suggested")
+                if isinstance(suggested, list) and suggested:
+                    candidates = ", ".join(str(item) for item in suggested[:4])
+                    add_feedback(f"Try one of these selectors instead: {candidates}.")
+            filters_meta = metadata.get("filters")
+            if isinstance(filters_meta, dict):
+                keywords_meta = filters_meta.get("keywords")
+                if isinstance(keywords_meta, dict) and keywords_meta.get("removed_all"):
+                    add_feedback(
+                        "Keyword filtering removed all content. Adjust the keywords or refine the selector after probing the DOM structure."
+                    )
+
+    if not meaningful:
+        add_feedback(
+            "Playwright extracted empty content for all selectors. Probe the DOM with `evaluate` or `count`, then retry "
+            "with a more specific selector (for example `main article h2`)."
+        )
+
+    if not non_evaluate_found:
+        add_feedback(
+            "Playwright only returned results from an `evaluate` extraction. After probing the DOM, follow up with "
+            "structured calls such as `inner_text`, `all_inner_texts`, or `attribute` using precise selectors."
+        )
+
+    if feedback_parts:
+        return " ".join(feedback_parts)
+    return None
+
+
+def build_system_prompt_with_current_time() -> str:
+    """Return the system prompt with the current time appended when available."""
+    base_prompt = config.SYSTEM_PROMPT
+    timezone_name = getattr(config, "AGENT_DEFAULT_TIMEZONE", "UTC") or "UTC"
+
+    try:
+        current_time_result = execute_tool("get_current_time", {"timezone": timezone_name})
+    except Exception:
+        logger.exception("Failed to fetch current time for system prompt.")
+        return base_prompt
+
+    if not isinstance(current_time_result, dict):
+        return base_prompt
+
+    if not current_time_result.get("success"):
+        error_message = current_time_result.get("message")
+        if error_message:
+            logger.warning("get_current_time tool returned failure: %s", error_message)
+        return base_prompt
+
+    timezone_value = str(current_time_result.get("timezone") or timezone_name)
+    datetime_value = current_time_result.get("datetime")
+    if not isinstance(datetime_value, str) or not datetime_value.strip():
+        return base_prompt
+
+    trimmed_prompt = base_prompt.rstrip()
+    time_line = f"Current time ({timezone_value}): {datetime_value}"
+    if trimmed_prompt:
+        return f"{trimmed_prompt}\n\n{time_line}"
+    return time_line
+
+
 async def run_agent_loop(
     session_id: int, user_message: str, model_id: str, files: Optional[List[int]], db: Session
 ) -> AsyncGenerator[str, None]:
@@ -473,9 +618,12 @@ async def run_agent_loop(
     # 1. Load the full history.
     history = load_complete_history(session_id, db)
 
-    # 2. Prepend the system prompt if missing.
-    if not history or history[0].get("role") != "system":
-        history.insert(0, {"role": "system", "content": config.SYSTEM_PROMPT})
+    # 2. Prepend or refresh the system prompt with the current time.
+    system_prompt_content = build_system_prompt_with_current_time()
+    if history and history[0].get("role") == "system":
+        history[0]["content"] = system_prompt_content
+    else:
+        history.insert(0, {"role": "system", "content": system_prompt_content})
 
     # 3. Incorporate file metadata/images into the user message.
     user_content = build_message_content_with_files(user_message, files or [], db)
@@ -851,7 +999,7 @@ async def run_agent_loop(
 
             # Run the tool and capture success state.
             try:
-                if tool_name in {"playwright_browse", "download_and_convert_file"}:
+                if tool_name in {"playwright_browse", "playwright_probe", "download_and_convert_file"}:
                     tool_result = await asyncio.to_thread(execute_tool, tool_name, tool_input, history, session_id)
                 else:
                     tool_result = execute_tool(tool_name, tool_input, history, session_id)
@@ -897,6 +1045,18 @@ async def run_agent_loop(
                     "content": build_tool_message_content(stored_tool_result),
                 }
             )
+
+            if tool_name == "playwright_browse" and isinstance(raw_tool_result, dict):
+                feedback_message = _playwright_feedback_message(raw_tool_result)
+                if feedback_message:
+                    history.append({"role": "system", "content": feedback_message})
+                    yield sse_event(
+                        {
+                            "type": "system_feedback",
+                            "message": feedback_message,
+                            "timestamp": get_timestamp(),
+                        }
+                    )
 
             assistant_artifact_content: Optional[List[Dict[str, Any]]] = None
             if isinstance(raw_tool_result, dict):

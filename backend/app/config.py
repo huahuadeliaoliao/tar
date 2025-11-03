@@ -112,6 +112,10 @@ class Config:
 
         self.MAX_ITERATIONS: int = int(agent.get("max_iterations", 50))
         self.MAX_RETRY_ON_MULTIPLE_TOOLS: int = int(agent.get("max_retry_on_multiple_tools", 3))
+        timezone_candidate = os.getenv(
+            "AGENT_DEFAULT_TIMEZONE", self._none_to_empty(agent.get("default_timezone"))
+        ).strip()
+        self.AGENT_DEFAULT_TIMEZONE: str = timezone_candidate or "UTC"
 
         self.BACKGROUND_TASK_MAX_WORKERS: int = int(background_tasks.get("max_workers", 8))
 
@@ -129,17 +133,6 @@ class Config:
         if max_extraction_raw in (None, ""):
             max_extraction_raw = 8000
         self.PLAYWRIGHT_MAX_EXTRACTION_CHARS: int = int(max_extraction_raw)
-        forbid_selectors_raw = playwright_settings.get("forbid_selectors", ["body", "html", "*"])
-        if isinstance(forbid_selectors_raw, (list, tuple)):
-            self.PLAYWRIGHT_FORBID_SELECTORS: List[str] = [
-                str(item).strip().lower() for item in forbid_selectors_raw if str(item).strip()
-            ]
-        else:
-            selector_value = str(forbid_selectors_raw).strip()
-            self.PLAYWRIGHT_FORBID_SELECTORS = [selector_value.lower()] if selector_value else []
-        self.PLAYWRIGHT_ALLOW_BROAD_SELECTOR: bool = self._parse_bool(
-            playwright_settings.get("allow_broad_selector", False)
-        )
         self.PLAYWRIGHT_BROWSERS_PATH: str = playwright_settings.get("browsers_path", "/ms-playwright")
         self.PLAYWRIGHT_MAX_DOWNLOAD_SIZE_BYTES: int = int(
             playwright_settings.get("max_download_file_size_bytes", 30 * 1024 * 1024)

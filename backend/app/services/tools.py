@@ -255,10 +255,11 @@ AVAILABLE_TOOLS = [
         "function": {
             "name": "playwright_browse",
             "description": (
-                "Open a web page in a headless browser, perform simple interactions, and extract structured content or "
-                "screenshots. Each extraction (except 'evaluate') must include a precise CSS/XPath selector or explicit "
-                "page range. Broad selectors such as 'body', 'html', or '*' are rejected; segment the request with "
-                "keywords or page ranges when you need more coverage."
+                "Open a page, run optional actions, and extract text, attributes, HTML, or screenshots. A practical recipe is:\n"
+                "  1. Probe the DOM with a lightweight `evaluate` or `count` call to inspect matching elements.\n"
+                "  2. Once you know the structure, call `inner_text`, `all_inner_texts`, `attribute`, or `html` with the precise selector you need.\n"
+                "  3. Use `keywords` or `page_range` only when you need to trim large results.\n"
+                "You are free to mix these steps as needed—the tool simply returns what Playwright observes."
             ),
             "parameters": {
                 "type": "object",
@@ -304,9 +305,9 @@ AVAILABLE_TOOLS = [
                     "extract": {
                         "type": "array",
                         "description": (
-                            "Extraction instructions. Supported types: inner_text, all_inner_texts, attribute, html, "
-                            "outer_html, count, evaluate. Provide a selector for every type except evaluate. "
-                            "html/outer_html results are returned as Markdown with length limits."
+                            "Extraction instructions executed after navigation. Supported types: inner_text, all_inner_texts, attribute, html, "
+                            "outer_html, count, evaluate. Prefer probing selectors with `evaluate`/`count` first, then follow up with targeted "
+                            "selector-based calls. Reserve `evaluate` for complex or fallback logic. html/outer_html results are converted to Markdown with length limits."
                         ),
                         "items": {
                             "type": "object",
@@ -325,7 +326,9 @@ AVAILABLE_TOOLS = [
                                 },
                                 "selector": {
                                     "type": "string",
-                                    "description": "Required for all types except 'evaluate'. Must not be 'body', 'html', or '*'.",
+                                    "description": (
+                                        "Required for all types except 'evaluate'. Start broad only to probe the DOM; once you learn the structure, switch to a specific selector."
+                                    ),
                                 },
                                 "name": {"type": "string"},
                                 "attribute": {"type": "string"},
@@ -334,6 +337,11 @@ AVAILABLE_TOOLS = [
                                     "type": "integer",
                                     "minimum": 0,
                                     "description": "When provided, operate on the nth matching element (0-based).",
+                                },
+                                "timeout_ms": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "description": "Override the timeout for this extraction only.",
                                 },
                                 "pick_first": {
                                     "type": "boolean",
@@ -377,6 +385,46 @@ AVAILABLE_TOOLS = [
                     },
                 },
                 "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "playwright_probe",
+            "description": (
+                "Open a page and quickly inspect one or more selectors. Returns match counts and small snippets so you can decide which selectors to use later."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute URL to open for probing.",
+                    },
+                    "selectors": {
+                        "description": "Selector string or array of selector strings to probe.",
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "minItems": 1,
+                            },
+                        ],
+                    },
+                    "wait_until": {
+                        "type": "string",
+                        "enum": ["load", "domcontentloaded", "networkidle", "commit"],
+                        "description": "Optional readiness state before probing. Defaults to 'load'.",
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional navigation timeout in milliseconds.",
+                    },
+                },
+                "required": ["url", "selectors"],
             },
         },
     },
@@ -603,6 +651,8 @@ def execute_tool(
         return execute_ai_search_web(tool_input)
     elif tool_name == "playwright_browse":
         return execute_playwright_browse(tool_input, session_id)
+    elif tool_name == "playwright_probe":
+        return execute_playwright_probe(tool_input)
     elif tool_name == "download_and_convert_file":
         return execute_download_and_convert_file(tool_input, session_id)
     elif tool_name == "reasoning":
@@ -1084,6 +1134,11 @@ def execute_playwright_browse(tool_input: Dict[str, Any], session_id: Optional[i
         result.setdefault("warnings", []).append("screenshot_not_persisted")
 
     return result
+
+
+def execute_playwright_probe(tool_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Return selector probe information for a page without extracting full content."""
+    return playwright_manager.probe_selectors(tool_input)
 
 
 def execute_download_and_convert_file(tool_input: Dict[str, Any], session_id: Optional[int]) -> Dict[str, Any]:

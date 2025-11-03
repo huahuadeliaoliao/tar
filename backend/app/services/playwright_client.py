@@ -194,6 +194,14 @@ class PlaywrightManager:
         url = str(payload.get("url", "")).strip()
         if not url:
             return self._error("invalid_url", "Parameter 'url' is required.", logs)
+        if url.lower().startswith("view-source:"):
+            stripped = url[len("view-source:") :].strip()
+            if not stripped:
+                return self._error(
+                    "invalid_url", "Parameter 'url' is required after stripping view-source: prefix.", logs
+                )
+            logs.append("view-source requested; using the rendered document instead.")
+            url = stripped
 
         wait_until_candidate = str(payload.get("wait_until") or config.PLAYWRIGHT_DEFAULT_WAIT_UNTIL).strip().lower()
         wait_until = (
@@ -219,9 +227,6 @@ class PlaywrightManager:
                 logs,
             )
 
-        allow_broad_selector = config.PLAYWRIGHT_ALLOW_BROAD_SELECTOR
-        forbidden_selectors = {sel.lower() for sel in config.PLAYWRIGHT_FORBID_SELECTORS}
-
         for idx, extraction in enumerate(extracts, start=1):
             if not isinstance(extraction, dict):
                 return self._error("invalid_extraction", f"Extraction {idx} must be an object with parameters.", logs)
@@ -236,17 +241,7 @@ class PlaywrightManager:
                         f"Extraction {idx} requires a non-empty 'selector'. Provide a precise CSS/XPath selector.",
                         logs,
                     )
-                normalized_selector = selector_value.strip()
-                if not allow_broad_selector and normalized_selector.lower() in forbidden_selectors:
-                    return self._error(
-                        "invalid_selector",
-                        (
-                            f"Extraction {idx} selector '{normalized_selector}' is too broad. "
-                            "Target the specific element you need instead of the entire page."
-                        ),
-                        logs,
-                    )
-                extraction["selector"] = normalized_selector
+                extraction["selector"] = selector_value.strip()
 
             try:
                 keywords = self._normalize_keywords(extraction.get("keywords"))
@@ -339,6 +334,93 @@ class PlaywrightManager:
                     except Exception:  # pragma: no cover - defensive
                         logger.debug("Failed to close Playwright context", exc_info=True)
 
+    def probe_selectors(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Return match counts and sample snippets for selectors without extracting full content."""
+        logs: List[str] = []
+        url = str(payload.get("url", "")).strip()
+        if not url:
+            return self._error("invalid_url", "Parameter 'url' is required.", logs)
+        wait_until_candidate = str(payload.get("wait_until") or config.PLAYWRIGHT_DEFAULT_WAIT_UNTIL).strip().lower()
+        wait_until = (
+            wait_until_candidate if wait_until_candidate in WAIT_UNTIL_OPTIONS else config.PLAYWRIGHT_DEFAULT_WAIT_UNTIL
+        )
+
+        raw_selectors = payload.get("selectors")
+        selectors: List[str]
+        if isinstance(raw_selectors, str):
+            selectors = [raw_selectors.strip()]
+        elif isinstance(raw_selectors, list):
+            selectors = [str(item).strip() for item in raw_selectors if str(item).strip()]
+        else:
+            selectors = []
+
+        if not selectors:
+            return self._error(
+                "invalid_selectors", "Parameter 'selectors' must be a non-empty string or array of strings.", logs
+            )
+
+        goto_timeout = _parse_positive_int(payload.get("timeout_ms")) or config.PLAYWRIGHT_NAVIGATION_TIMEOUT_MS
+
+        with self._lock:
+            try:
+                self._ensure_browser()
+            except Exception as exc:  # pragma: no cover - launch failure is environment specific
+                logger.exception("Failed to initialise Playwright browser")
+                return self._error("browser_initialisation_failed", str(exc), logs)
+
+            assert self._browser is not None
+            context = None
+            page = None
+            try:
+                context = self._browser.new_context()
+                page = context.new_page()
+                context.set_default_timeout(config.PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
+                context.set_default_navigation_timeout(config.PLAYWRIGHT_NAVIGATION_TIMEOUT_MS)
+
+                navigation_start = time.perf_counter()
+                response = page.goto(url, wait_until=wait_until, timeout=goto_timeout)
+                navigation_duration = int((time.perf_counter() - navigation_start) * 1000)
+                status_code = response.status if response else None
+                logs.append(
+                    f"Navigated to {url} (status={status_code}, wait_until={wait_until}, duration={navigation_duration}ms)"
+                )
+
+                probes: List[Dict[str, Any]] = []
+                for selector in selectors:
+                    probe_result = self._probe_selector(page, selector)
+                    probes.append({"selector": selector, "result": probe_result})
+
+                try:
+                    title = page.title()
+                except PlaywrightError:
+                    title = ""
+
+                return {
+                    "success": True,
+                    "final_url": page.url,
+                    "title": title,
+                    "status_code": status_code,
+                    "probes": probes,
+                    "logs": logs,
+                }
+            except PlaywrightTimeoutError as exc:
+                logger.warning("Playwright probe timed out", exc_info=exc)
+                return self._error("timeout", str(exc), logs)
+            except PlaywrightError as exc:
+                logger.warning("Playwright raised an error during probe", exc_info=exc)
+                self._restart_browser()
+                return self._error("playwright_error", str(exc), logs)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.exception("Unexpected Playwright failure during probe")
+                self._restart_browser()
+                return self._error("unexpected_error", str(exc), logs)
+            finally:
+                if context is not None:
+                    try:
+                        context.close()
+                    except Exception:  # pragma: no cover - defensive
+                        logger.debug("Failed to close Playwright context", exc_info=True)
+
     def _run_actions(self, page: Any, actions: List[Dict[str, Any]], logs: List[str]) -> None:
         """Execute user-specified actions sequentially."""
         if not actions:
@@ -414,6 +496,8 @@ class PlaywrightManager:
             if isinstance(page_range_value, list) and len(page_range_value) == 2:
                 entry["page_range"] = (int(page_range_value[0]), int(page_range_value[1]))
 
+            metadata: Dict[str, Any] = {}
+
             if extraction_type == "evaluate":
                 expression = extraction.get("expression")
                 if not isinstance(expression, str) or not expression.strip():
@@ -421,9 +505,35 @@ class PlaywrightManager:
                 logs.append(f"Extraction {idx}: evaluate JavaScript expression")
                 value = page.evaluate(expression)
                 entry["value"] = _json_safe(value)
+                metadata["status"] = "ok"
             else:
                 selector = self._require_selector(extraction, context=f"extraction {idx}")
                 entry["selector"] = selector
+                probe = self._probe_selector(page, selector)
+                metadata["probe"] = probe
+
+                if isinstance(probe, dict) and probe.get("error"):
+                    entry["value"] = _json_safe(self._default_empty_value(extraction_type))
+                    metadata["status"] = "invalid_selector"
+                    metadata["message"] = f"Selector error: {probe['error']}"
+                    entry["metadata"] = metadata
+                    results.append(entry)
+                    continue
+
+                match_count = 0
+                if isinstance(probe, dict):
+                    match_count = int(probe.get("matched", 0)) if isinstance(probe.get("matched"), (int, float)) else 0
+                metadata["match_count"] = match_count
+                if match_count == 0:
+                    entry["value"] = _json_safe(self._default_empty_value(extraction_type))
+                    metadata["status"] = "no_match"
+                    metadata["message"] = (
+                        "Selector matched 0 elements. Use evaluate() or count to inspect the DOM before retrying."
+                    )
+                    entry["metadata"] = metadata
+                    results.append(entry)
+                    continue
+
                 locator = page.locator(selector)
                 pick_first = bool(extraction.get("pick_first", False))
                 index_value = _parse_non_negative_int(extraction.get("index"))
@@ -477,10 +587,72 @@ class PlaywrightManager:
                     raise ValueError(f"Unsupported extraction type '{extraction_type}' for extraction {idx}.")
 
                 entry["value"] = _json_safe(value)
+                metadata["status"] = "ok" if not self._is_empty_extraction_result(extraction_type, value) else "empty"
+                metadata["match_count"] = match_count
+
+            if metadata:
+                entry["metadata"] = metadata
 
             results.append(entry)
 
         return results
+
+    def _probe_selector(self, page: Any, selector: str, sample_size: int = 3) -> Dict[str, Any]:
+        try:
+            probe = page.evaluate(
+                """(params) => {
+                    const { selector, sampleSize } = params || {};
+                    let nodes;
+                    try {
+                        nodes = Array.from(document.querySelectorAll(selector));
+                    } catch (error) {
+                        return { error: error.message };
+                    }
+                    const samples = nodes.slice(0, sampleSize || 3).map(node => ({
+                        outerHTML: node.outerHTML ? node.outerHTML.slice(0, 200) : "",
+                        text: (node.textContent || "").trim().slice(0, 200),
+                    }));
+                    return { matched: nodes.length, samples };
+                }""",
+                {"selector": selector, "sampleSize": sample_size},
+            )
+        except PlaywrightError as exc:
+            return {"error": str(exc)}
+
+        if not isinstance(probe, dict):
+            return {"error": "probe_failed"}
+
+        matched = probe.get("matched")
+        if not isinstance(matched, (int, float)):
+            probe["matched"] = 0
+
+        samples = probe.get("samples")
+        if not isinstance(samples, list):
+            probe["samples"] = []
+
+        return probe
+
+    @staticmethod
+    def _default_empty_value(extraction_type: str) -> Any:
+        if extraction_type == "all_inner_texts":
+            return []
+        if extraction_type == "count":
+            return 0
+        if extraction_type == "attribute":
+            return None
+        return ""
+
+    @staticmethod
+    def _is_empty_extraction_result(extraction_type: str, value: Any) -> bool:
+        if extraction_type == "count":
+            return isinstance(value, int) and value == 0
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        if isinstance(value, list):
+            return len(value) == 0
+        return False
 
     def download_file(self, url: str, timeout: Optional[int] = None) -> tuple[bytes, Dict[str, str]]:
         """Download raw bytes for a remote resource via Playwright."""
@@ -865,14 +1037,7 @@ class PlaywrightManager:
         selector = payload.get("selector")
         if not isinstance(selector, str) or not selector.strip():
             raise ValueError(f"{context} requires a non-empty 'selector'.")
-        normalized_selector = selector.strip()
-        if not config.PLAYWRIGHT_ALLOW_BROAD_SELECTOR and normalized_selector.lower() in {
-            sel.lower() for sel in config.PLAYWRIGHT_FORBID_SELECTORS
-        }:
-            raise ValueError(
-                f"{context} selector '{normalized_selector}' is not allowed. Provide a more specific selector."
-            )
-        return normalized_selector
+        return selector.strip()
 
     def _error(self, code: str, message: str, logs: List[str]) -> Dict[str, Any]:
         logs.append(f"Error: {message}")

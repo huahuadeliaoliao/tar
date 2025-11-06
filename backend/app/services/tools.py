@@ -6,7 +6,7 @@ import logging
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 from urllib.parse import unquote, urlparse
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ from app.services.file_handler import (
     convert_pdf_to_images,
 )
 from app.services.playwright_client import playwright_manager
+from app.services.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,8 @@ def _format_results(
 
 
 # Tool definitions.
+
+
 AVAILABLE_TOOLS = [
     {
         "type": "function",
@@ -249,6 +252,9 @@ AVAILABLE_TOOLS = [
                 "required": [],
             },
         },
+        "tier": "core",
+        "tags": ["time"],
+        "enablement": True,
     },
     {
         "type": "function",
@@ -376,7 +382,10 @@ AVAILABLE_TOOLS = [
                         },
                     },
                     "screenshot": {
-                        "description": "Capture a screenshot. Use true for a viewport screenshot or provide an object with optional 'full_page' and 'selector'.",
+                        "description": (
+                            "Capture a screenshot. Use true for a viewport screenshot or provide an object with "
+                            "optional 'full_page' and 'selector' keys."
+                        ),
                         "type": ["boolean", "object"],
                         "properties": {
                             "full_page": {"type": "boolean"},
@@ -387,13 +396,17 @@ AVAILABLE_TOOLS = [
                 "required": ["url"],
             },
         },
+        "tier": "core",
+        "tags": ["browser", "scraping"],
+        "enablement": True,
     },
     {
         "type": "function",
         "function": {
             "name": "playwright_probe",
             "description": (
-                "Open a page and quickly inspect one or more selectors. Returns match counts and small snippets so you can decide which selectors to use later."
+                "Open a page and quickly inspect one or more selectors. Returns match counts and snippets so you can "
+                "decide which selectors to use later."
             ),
             "parameters": {
                 "type": "object",
@@ -427,6 +440,9 @@ AVAILABLE_TOOLS = [
                 "required": ["url", "selectors"],
             },
         },
+        "tier": "core",
+        "tags": ["browser", "inspection"],
+        "enablement": True,
     },
     {
         "type": "function",
@@ -456,6 +472,9 @@ AVAILABLE_TOOLS = [
                 "required": ["file_url", "file_type"],
             },
         },
+        "tier": "core",
+        "tags": ["files", "conversion"],
+        "enablement": True,
     },
     {
         "type": "function",
@@ -532,6 +551,9 @@ AVAILABLE_TOOLS = [
                 "required": [],
             },
         },
+        "tier": "core",
+        "tags": ["search"],
+        "enablement": True,
     },
     {
         "type": "function",
@@ -552,30 +574,35 @@ AVAILABLE_TOOLS = [
                 "required": ["query"],
             },
         },
+        "tier": "extra",
+        "tags": ["search", "ai"],
+        "enablement": True,
     },
     {
         "type": "function",
         "function": {
             "name": "reasoning",
-            "description": """Reflect on the complete conversation and tool history without trimming. Use this whenever the
-task feels complex, stalled, or uncertain. Before responding, pause execution and produce a concise JSON recap.
-
-Best used when:
-- You need to review the current goal, progress, and remaining gaps
-- A previous step/tool failed or produced unexpected output
-- New evidence (e.g., search/browse results) must be consolidated
-- You are deciding whether it is safe to deliver the final answer
-
-Always cover:
-- Summary: current objective, what has been done, what still blocks you
-- Evidence: confirmed facts or data points from searches/tools (include source + confidence when possible)
-- Issues: recent failures, risks, or uncertainties that require attention
-- Next actions: concrete, ordered steps you will take next
-- Ready flag: set `ready_to_reply` to true only when you can answer the user without caveats
-
-Even if you are ready to reply immediately, include a placeholder in `next_actions` (e.g., "Deliver final reply to the user").
-
-Respond with structured JSON only; the system will not alter or add to your fields.""",
+            "description": (
+                "Reflect on the complete conversation and tool history without trimming. Use this whenever the task feels complex, stalled, or uncertain. Before responding, pause execution and produce a concise JSON recap.\n"
+                "\n"
+                "Best used when:\n"
+                "- You need to review the current goal, progress, and remaining gaps\n"
+                "- A previous step/tool failed or produced unexpected output\n"
+                "- New evidence (e.g., search/browse results) must be consolidated\n"
+                "- You are deciding whether it is safe to deliver the final answer\n"
+                "\n"
+                "Always cover:\n"
+                "- Summary: current objective, what has been done, what still blocks you\n"
+                "- Evidence: confirmed facts or data points from searches/tools (include source + confidence when possible)\n"
+                "- Issues: recent failures, risks, or uncertainties that require attention\n"
+                "- Next actions: concrete, ordered steps you will take next\n"
+                "- Ready flag: set `ready_to_reply` to true only when you can answer the user without caveats\n"
+                "\n"
+                "If extra capabilities are required beyond the core tools, include 'Call explore_tool' in `next_actions` before requesting them.\n"
+                'Even if you are ready to reply immediately, include a placeholder in `next_actions` (e.g., "Deliver final reply to the user").\n'
+                "\n"
+                "Respond with structured JSON only; the system will not alter or add to your fields."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -622,8 +649,94 @@ Respond with structured JSON only; the system will not alter or add to your fiel
                 "required": ["summary", "next_actions", "ready_to_reply"],
             },
         },
+        "tier": "core",
+        "tags": ["reasoning"],
+        "enablement": True,
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "explore_tool",
+            "description": (
+                "Describe the current task requirements to request temporary access to extra tools. "
+                "The response identifies which non-core tools should be enabled for this iteration."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_summary": {
+                        "type": "string",
+                        "description": "Brief summary of the current objective and why extra tools may help.",
+                    },
+                    "observed_outputs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of outputs or tool results observed so far.",
+                    },
+                    "blocking_constraints": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Known blockers, requirements, or constraints affecting tool choice.",
+                    },
+                    "prior_tools_used": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tools already attempted for this task.",
+                    },
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": "Set to true to bypass cached exploration decisions.",
+                    },
+                },
+                "required": ["task_summary"],
+            },
+        },
+        "tier": "core",
+        "tags": ["exploration", "tooling"],
+        "enablement": True,
     },
 ]
+
+
+EXPLORE_INTERNAL_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "enable_tool",
+            "description": (
+                "Enable one or more non-core tools for the active agent iteration. "
+                "Always explain why each tool is required and provide a confidence estimate."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tools": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of tool names to enable. Must be optional tools exposed in the prompt.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Short justification explaining why these tools help the task.",
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high"],
+                        "description": "Confidence that the selected tools address the task requirements.",
+                    },
+                    "warnings": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of caveats or risks associated with enabling these tools.",
+                    },
+                },
+                "required": ["tools"],
+            },
+        },
+    }
+]
+
+tool_registry = ToolRegistry(AVAILABLE_TOOLS, EXPLORE_INTERNAL_TOOLS)
 
 
 def execute_tool(
@@ -657,6 +770,8 @@ def execute_tool(
         return execute_download_and_convert_file(tool_input, session_id)
     elif tool_name == "reasoning":
         return execute_reasoning(tool_input, messages_history or [], session_id or 0)
+    elif tool_name == "explore_tool":
+        raise ValueError("explore_tool is handled asynchronously within the agent loop.")
     else:
         raise ValueError(f"Unknown tool: {tool_name}")
 
@@ -1330,10 +1445,21 @@ def execute_download_and_convert_file(tool_input: Dict[str, Any], session_id: Op
     }
 
 
-def get_available_tools() -> List[Dict[str, Any]]:
-    """Return the tool definitions.
+def get_available_tools(transient_enabled: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+    """Return tool definitions visible to the main agent loop."""
+    return tool_registry.for_session(transient_enabled)
 
-    Returns:
-        List[Dict[str, Any]]: JSON-schema-compatible tool definitions.
-    """
-    return AVAILABLE_TOOLS
+
+def get_internal_tools() -> List[Dict[str, Any]]:
+    """Return internal-only tool definitions (used by explore_tool)."""
+    return tool_registry.internal_tools()
+
+
+def get_optional_tool_definitions(*, strip_meta: bool = False) -> List[Dict[str, Any]]:
+    """Return extra/mcp tool definitions for prompts or validation."""
+    return tool_registry.get_tools_by_tier({"extra", "mcp"}, strip_meta=strip_meta)
+
+
+def get_optional_tool_names() -> Set[str]:
+    """Return the set of tool names that are not part of the core tier."""
+    return tool_registry.optional_tool_names()

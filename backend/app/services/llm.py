@@ -18,6 +18,7 @@ async def call_llm_with_tools(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     tool_choice: Optional[Any] = None,
+    tools_override: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncGenerator:
     """Call the chat API with tool support.
 
@@ -28,11 +29,12 @@ async def call_llm_with_tools(
         temperature: Optional override for sampling temperature.
         max_tokens: Optional override for maximum completion tokens.
         tool_choice: Optional forced tool selection (e.g., specify a particular tool to invoke).
+        tools_override: Optional explicit tool list; when omitted, defaults to the registry configuration.
 
     Yields:
         OpenAIStream or OpenAICompletion: Streaming chunks or a full response.
     """
-    tools = get_available_tools()
+    tools = tools_override if tools_override is not None else get_available_tools()
 
     # Fall back to configured defaults when optional overrides are missing.
     if temperature is None:

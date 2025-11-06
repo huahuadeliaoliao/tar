@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.config import config
 from app.models import File, FileImage, Message
+from app.services.explore import LoopContext, run_explore_tool
 from app.services.llm import call_llm_with_tools
-from app.services.tools import execute_tool
+from app.services.tools import execute_tool, get_available_tools
 from app.utils.helpers import get_timestamp, sse_event
 
 logger = logging.getLogger(__name__)
@@ -551,36 +552,43 @@ def _playwright_feedback_message(result: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def build_system_prompt_with_current_time() -> str:
-    """Return the system prompt with the current time appended when available."""
-    base_prompt = config.SYSTEM_PROMPT
+def build_system_prompt_with_current_time(enabled_tools: Optional[List[str]] = None) -> str:
+    """Return the system prompt with the current time and tool availability appended when possible."""
+    base_prompt = (config.SYSTEM_PROMPT or "").rstrip()
+    prompt_segments: List[str] = []
+    if base_prompt:
+        prompt_segments.append(base_prompt)
+
     timezone_name = getattr(config, "AGENT_DEFAULT_TIMEZONE", "UTC") or "UTC"
+    time_line: Optional[str] = None
 
     try:
         current_time_result = execute_tool("get_current_time", {"timezone": timezone_name})
     except Exception:
         logger.exception("Failed to fetch current time for system prompt.")
-        return base_prompt
+    else:
+        if isinstance(current_time_result, dict) and current_time_result.get("success"):
+            timezone_value = str(current_time_result.get("timezone") or timezone_name)
+            datetime_value = current_time_result.get("datetime")
+            if isinstance(datetime_value, str) and datetime_value.strip():
+                time_line = f"Current time ({timezone_value}): {datetime_value}"
+        else:
+            error_message = None
+            if isinstance(current_time_result, dict):
+                error_message = current_time_result.get("message")
+            if error_message:
+                logger.warning("get_current_time tool returned failure: %s", error_message)
 
-    if not isinstance(current_time_result, dict):
-        return base_prompt
+    if time_line:
+        prompt_segments.append(time_line)
 
-    if not current_time_result.get("success"):
-        error_message = current_time_result.get("message")
-        if error_message:
-            logger.warning("get_current_time tool returned failure: %s", error_message)
-        return base_prompt
+    if enabled_tools:
+        availability_line = f"Available tools this iteration: {', '.join(enabled_tools)}"
+    else:
+        availability_line = "Available tools this iteration: (none)"
+    prompt_segments.append(availability_line)
 
-    timezone_value = str(current_time_result.get("timezone") or timezone_name)
-    datetime_value = current_time_result.get("datetime")
-    if not isinstance(datetime_value, str) or not datetime_value.strip():
-        return base_prompt
-
-    trimmed_prompt = base_prompt.rstrip()
-    time_line = f"Current time ({timezone_value}): {datetime_value}"
-    if trimmed_prompt:
-        return f"{trimmed_prompt}\n\n{time_line}"
-    return time_line
+    return "\n\n".join(segment for segment in prompt_segments if segment)
 
 
 async def run_agent_loop(
@@ -604,6 +612,7 @@ async def run_agent_loop(
         finish reason.
     """
     start_time = time.time()
+    loop_ctx = LoopContext(session_id=session_id, model_id=model_id)
 
     # Emit initial status.
     yield sse_event(
@@ -618,8 +627,11 @@ async def run_agent_loop(
     # 1. Load the full history.
     history = load_complete_history(session_id, db)
 
+    initial_tools = get_available_tools()
+    initial_tool_names = [tool["function"]["name"] for tool in initial_tools]
+
     # 2. Prepend or refresh the system prompt with the current time.
-    system_prompt_content = build_system_prompt_with_current_time()
+    system_prompt_content = build_system_prompt_with_current_time(initial_tool_names)
     if history and history[0].get("role") == "system":
         history[0]["content"] = system_prompt_content
     else:
@@ -808,6 +820,8 @@ async def run_agent_loop(
 
     while iteration < config.MAX_ITERATIONS:
         textual_calls_detected = []
+        tools_for_round = get_available_tools(loop_ctx.transient_enabled_tools)
+
         # Notify the client that the agent is thinking.
         yield sse_event(
             {"type": "thinking", "message": "Thinking about how to respond...", "timestamp": get_timestamp()}
@@ -822,7 +836,13 @@ async def run_agent_loop(
 
         tool_choice = {"type": "function", "function": {"name": "reasoning"}} if force_reasoning_next else None
 
-        async for chunk in call_llm_with_tools(history, model_id, stream=True, tool_choice=tool_choice):
+        async for chunk in call_llm_with_tools(
+            history,
+            model_id,
+            stream=True,
+            tool_choice=tool_choice,
+            tools_override=tools_for_round,
+        ):
             response_chunks.append(chunk)
 
             # Process streaming content.
@@ -999,10 +1019,13 @@ async def run_agent_loop(
 
             # Run the tool and capture success state.
             try:
-                if tool_name in {"playwright_browse", "playwright_probe", "download_and_convert_file"}:
+                if tool_name == "explore_tool":
+                    tool_result = await run_explore_tool(model_id, tool_input, loop_ctx, history)
+                elif tool_name in {"playwright_browse", "playwright_probe", "download_and_convert_file"}:
                     tool_result = await asyncio.to_thread(execute_tool, tool_name, tool_input, history, session_id)
                 else:
                     tool_result = execute_tool(tool_name, tool_input, history, session_id)
+
                 if isinstance(tool_result, dict) and "success" in tool_result:
                     tool_success = bool(tool_result.get("success"))
                 else:
@@ -1271,6 +1294,8 @@ async def run_agent_loop(
                 }
             )
             raise UnexpectedFinishReasonError(f"Unexpected finish_reason: {finish_reason}")
+
+    loop_ctx.transient_enabled_tools.clear()
 
     # Abort if the maximum iteration count is reached.
     if iteration >= config.MAX_ITERATIONS:
